@@ -65,7 +65,10 @@ PDF-AI-specific reader work:
 - PDF.js text layer for native selection, page-aware selection reporting, text search with page mapping, viewport-center current-page tracking, outline and lazy thumbnails.
 - Stable content-derived document IDs.
 - Lazy canvas/text rendering around the viewport; distant canvas/text resources are released.
+- Page and thumbnail canvases are allocated only while near their viewport; current-page tracking only scans nearby pages.
+- Reader admission is capped at 5,000 pages, page CSS dimensions are bounded, backing canvases are capped at 8,192 px / 16 MP, and pathological thumbnail aspect ratios are scaled to 112 × 160 bounds.
 - Search and text caching are generation-scoped so a document/query change cannot publish stale results; text cache is bounded.
+- Open-file selection is last-action-wins: a newer Open action supersedes any earlier pending selection/load.
 - Corrupt/non-PDF, empty, changed-during-read and >128 MB inputs fail visibly before reader admission.
 
 Intentionally omitted in this phase:
@@ -79,9 +82,11 @@ Isolation:
 Validation:
 
 - npm run typecheck: pass.
-- npm test: pass, 3 files / 12 tests.
+- npm test: pass, 4 files / 21 tests.
 - Real generated two-page PDF parses, extracts expected text and renders through PDF.js + @napi-rs/canvas in tests.
 - Navigation clamp, zoom/fit math, canvas pixel/dimension bounds, page-mapped selection and page-mapped search helpers are covered.
+- Direct PdfReader jsdom tests cover navigation, zoom/fit lifecycle, selected-text page ownership, stale search cancellation across document changes, lazy/offscreen page cleanup, bounded thumbnail rendering, and the page-count admission cap.
+- Overlapping Open loads are regression-tested so a stale load only destroys its own captured PDF.js loading task and cannot tear down the newer document.
 - Corrupt and oversized PDFs are rejected.
 - npm run build: pass.
 - npm run dev: Electron main/preload/renderer start successfully and remain running until stopped.

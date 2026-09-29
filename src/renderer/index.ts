@@ -67,6 +67,7 @@ const selectionStatus = required<HTMLElement>('#selection-status');
 const empty = required<HTMLElement>('#reader-empty');
 const searchInput = required<HTMLInputElement>('#pdf-search');
 let searchRequest = 0;
+let openRequest = 0;
 
 const reader = new PdfReader(
   { viewport, pages, outline, thumbnails },
@@ -112,8 +113,10 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-sidebar
 }
 
 required<HTMLButtonElement>('#open-pdf').addEventListener('click', async () => {
+  const request = ++openRequest;
   status.textContent = 'Choose a PDF…';
   const result = await window.pdfAi.openPdf();
+  if (request !== openRequest) return;
   if (!result.ok) {
     if (result.error.code !== 'cancelled') {
       status.textContent = result.error.message;
@@ -125,7 +128,9 @@ required<HTMLButtonElement>('#open-pdf').addEventListener('click', async () => {
   }
   try {
     await reader.open(result.document);
+    if (request !== openRequest) return;
   } catch {
+    if (request !== openRequest) return;
     empty.hidden = false;
   }
 });

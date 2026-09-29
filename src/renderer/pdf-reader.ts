@@ -15,7 +15,10 @@ import {
   clampZoom,
   findPageSearchHits,
   fitWidthScale,
+  isRenderableViewport,
+  MAX_READER_PAGES,
   pageNumberFromNode,
+  thumbnailScale,
   ZOOM_STEP
 } from './reader-math.js';
 
@@ -24,8 +27,8 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 interface PageView {
   number: number;
   root: HTMLElement;
-  canvas: HTMLCanvasElement;
-  text: HTMLDivElement;
+  canvas: HTMLCanvasElement | null;
+  text: HTMLDivElement | null;
   loading: boolean;
   renderedScale: number | null;
   renderTask: RenderTask | null;
@@ -36,8 +39,10 @@ interface PageView {
 interface ThumbnailView {
   number: number;
   root: HTMLButtonElement;
-  canvas: HTMLCanvasElement;
+  canvas: HTMLCanvasElement | null;
   rendered: boolean;
+  renderTask: RenderTask | null;
+  generation: number;
 }
 
 export interface PdfReaderElements {
@@ -63,6 +68,7 @@ export class PdfReader {
   private thumbnailViews = new Map<number, ThumbnailView>();
   private textCache = new Map<number, string>();
   private textCacheChars = 0;
+  private nearbyPages = new Set<number>();
   private pageObserver: IntersectionObserver;
   private thumbnailObserver: IntersectionObserver;
   private resizeObserver: ResizeObserver;
@@ -83,8 +89,13 @@ export class PdfReader {
         const root = entry.target as HTMLElement;
         const page = Number(root.dataset.page);
         if (!Number.isInteger(page)) continue;
-        if (entry.isIntersecting) void this.renderPage(page);
-        else this.releaseCanvas(page);
+        if (entry.isIntersecting) {
+          this.nearbyPages.add(page);
+          void this.renderPage(page);
+        } else {
+          this.nearbyPages.delete(page);
+          this.releasePage(page);
+        }
       }
       this.scheduleCurrentPageUpdate();
     }, {
@@ -94,9 +105,10 @@ export class PdfReader {
     });
     this.thumbnailObserver = new IntersectionObserver(entries => {
       for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
         const page = Number((entry.target as HTMLElement).dataset.page);
-        if (Number.isInteger(page)) void this.renderThumbnail(page);
+        if (!Number.isInteger(page)) continue;
+        if (entry.isIntersecting) void this.renderThumbnail(page);
+        else this.releaseThumbnail(page);
       }
     }, {
       root: this.elements.thumbnails,
@@ -135,19 +147,24 @@ export class PdfReader {
     this.document = document;
     this.events.onStatus?.('Loading ' + document.name + '…');
     try {
-      this.loadingTask = getDocument({
+      const loadingTask = getDocument({
         data: document.bytes,
         enableXfa: false,
         useSystemFonts: true,
         maxImageSize: 16 * 1024 * 1024,
         canvasMaxAreaInBytes: 64 * 1024 * 1024
       });
-      const pdf = await this.loadingTask.promise;
+      this.loadingTask = loadingTask;
+      const pdf = await loadingTask.promise;
       if (this.destroyed || generation !== this.documentGeneration) {
-        await this.loadingTask.destroy();
+        if (this.loadingTask === loadingTask) this.loadingTask = null;
+        await loadingTask.destroy();
         return;
       }
       this.pdf = pdf;
+      if (pdf.numPages > MAX_READER_PAGES) {
+        throw new Error('PDF has too many pages for the local reader limit of ' + MAX_READER_PAGES + '.');
+      }
       this.currentPage = 1;
       this.zoom = 1;
       this.fitWidth = true;
@@ -177,8 +194,13 @@ export class PdfReader {
       view.renderTask?.cancel();
       view.textLayer?.cancel();
     }
+    for (const view of this.thumbnailViews.values()) {
+      view.generation++;
+      view.renderTask?.cancel();
+    }
     this.pageViews.clear();
     this.thumbnailViews.clear();
+    this.nearbyPages.clear();
     this.textCache.clear();
     this.textCacheChars = 0;
     this.elements.pages.replaceChildren();
@@ -271,20 +293,16 @@ export class PdfReader {
       root.className = 'pdf-page';
       root.dataset.page = String(page);
       root.setAttribute('aria-label', 'Page ' + page);
-      const canvas = document.createElement('canvas');
-      canvas.className = 'pdf-page-canvas';
-      const text = document.createElement('div');
-      text.className = 'textLayer pdf-text-layer';
       const label = document.createElement('span');
       label.className = 'pdf-page-label';
       label.textContent = String(page);
-      root.append(canvas, text, label);
+      root.append(label);
       fragment.append(root);
       const view: PageView = {
         number: page,
         root,
-        canvas,
-        text,
+        canvas: null,
+        text: null,
         loading: false,
         renderedScale: null,
         renderTask: null,
@@ -305,16 +323,23 @@ export class PdfReader {
       root.className = 'pdf-thumbnail';
       root.dataset.page = String(page);
       root.title = 'Go to page ' + page;
-      const canvas = document.createElement('canvas');
       const label = document.createElement('span');
       label.textContent = String(page);
-      root.append(canvas, label);
+      root.append(label);
       root.addEventListener('click', () => this.goToPage(page));
       fragment.append(root);
-      this.thumbnailViews.set(page, { number: page, root, canvas, rendered: false });
+      this.thumbnailViews.set(page, {
+        number: page,
+        root,
+        canvas: null,
+        rendered: false,
+        renderTask: null,
+        generation: 0
+      });
       this.thumbnailObserver.observe(root);
     }
     this.elements.thumbnails.append(fragment);
+    this.thumbnailViews.get(1)?.root.classList.add('is-current');
   }
 
   private async renderPage(pageNumber: number): Promise<void> {
@@ -328,16 +353,18 @@ export class PdfReader {
       if (!this.isCurrent(view, generation)) return;
       const base = page.getViewport({ scale: 1 });
       const scale = this.fitWidth ? fitWidthScale(this.elements.viewport.clientWidth, base.width) : this.zoom;
-      if (view.renderedScale !== null && Math.abs(view.renderedScale - scale) < 0.001 && view.canvas.width > 1) return;
+      if (view.renderedScale !== null && Math.abs(view.renderedScale - scale) < 0.001 &&
+          view.canvas !== null && view.canvas.width > 1) return;
       view.renderTask?.cancel();
       view.textLayer?.cancel();
       const viewport = page.getViewport({ scale });
-      if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height) ||
-          viewport.width <= 0 || viewport.height <= 0 ||
-          viewport.width * viewport.height > 100_000_000) {
+      if (!isRenderableViewport(viewport.width, viewport.height)) {
         throw new Error('PDF page dimensions exceed the reader limit.');
       }
       const outputScale = boundedOutputScale(viewport.width, viewport.height, window.devicePixelRatio || 1);
+      if (!Number.isFinite(outputScale) || outputScale <= 0) {
+        throw new Error('PDF page scale is invalid.');
+      }
       const nextCanvas = document.createElement('canvas');
       nextCanvas.width = Math.max(1, Math.floor(viewport.width * outputScale));
       nextCanvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
@@ -346,19 +373,20 @@ export class PdfReader {
       await view.renderTask.promise;
       if (!this.isCurrent(view, generation)) return;
       view.renderTask = null;
+      const surface = this.ensurePageSurface(view);
       view.root.style.width = Math.ceil(viewport.width) + 'px';
       view.root.style.height = Math.ceil(viewport.height) + 'px';
-      view.canvas.width = nextCanvas.width;
-      view.canvas.height = nextCanvas.height;
-      view.canvas.style.width = Math.ceil(viewport.width) + 'px';
-      view.canvas.style.height = Math.ceil(viewport.height) + 'px';
-      view.canvas.getContext('2d')?.drawImage(nextCanvas, 0, 0);
-      view.text.replaceChildren();
-      view.text.style.width = Math.ceil(viewport.width) + 'px';
-      view.text.style.height = Math.ceil(viewport.height) + 'px';
+      surface.canvas.width = nextCanvas.width;
+      surface.canvas.height = nextCanvas.height;
+      surface.canvas.style.width = Math.ceil(viewport.width) + 'px';
+      surface.canvas.style.height = Math.ceil(viewport.height) + 'px';
+      surface.canvas.getContext('2d')?.drawImage(nextCanvas, 0, 0);
+      surface.text.replaceChildren();
+      surface.text.style.width = Math.ceil(viewport.width) + 'px';
+      surface.text.style.height = Math.ceil(viewport.height) + 'px';
       const textLayer = new TextLayer({
         textContentSource: page.streamTextContent(),
-        container: view.text,
+        container: surface.text,
         viewport
       });
       view.textLayer = textLayer;
@@ -375,18 +403,39 @@ export class PdfReader {
     }
   }
 
-  private releaseCanvas(pageNumber: number): void {
+  private ensurePageSurface(view: PageView): { canvas: HTMLCanvasElement; text: HTMLDivElement } {
+    let canvas = view.canvas;
+    let text = view.text;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.className = 'pdf-page-canvas';
+      view.root.prepend(canvas);
+      view.canvas = canvas;
+    }
+    if (!text) {
+      text = document.createElement('div');
+      text.className = 'textLayer pdf-text-layer';
+      const label = view.root.querySelector('.pdf-page-label');
+      if (label) view.root.insertBefore(text, label);
+      else view.root.append(text);
+      view.text = text;
+    }
+    return { canvas, text };
+  }
+
+  private releasePage(pageNumber: number): void {
     const view = this.pageViews.get(pageNumber);
-    if (!view || Math.abs(pageNumber - this.currentPage) <= 1) return;
+    if (!view) return;
     view.generation++;
     view.renderTask?.cancel();
     view.renderTask = null;
     view.textLayer?.cancel();
     view.textLayer = null;
-    view.text.replaceChildren();
     view.loading = false;
-    view.canvas.width = 1;
-    view.canvas.height = 1;
+    view.text?.remove();
+    view.canvas?.remove();
+    view.text = null;
+    view.canvas = null;
     view.renderedScale = null;
   }
 
@@ -394,18 +443,38 @@ export class PdfReader {
     const pdf = this.pdf;
     const view = this.thumbnailViews.get(pageNumber);
     if (!pdf || !view || view.rendered) return;
+    const generation = ++view.generation;
     view.rendered = true;
     try {
       const page = await pdf.getPage(pageNumber);
+      if (view.generation !== generation || this.pdf !== pdf) return;
       const base = page.getViewport({ scale: 1 });
-      const scale = Math.min(0.4, 112 / Math.max(1, base.width));
+      const scale = thumbnailScale(base.width, base.height);
       const viewport = page.getViewport({ scale });
-      view.canvas.width = Math.max(1, Math.floor(viewport.width));
-      view.canvas.height = Math.max(1, Math.floor(viewport.height));
-      await page.render({ canvas: view.canvas, viewport }).promise;
+      if (!isRenderableViewport(viewport.width, viewport.height)) throw new Error('Thumbnail dimensions exceed limits.');
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      view.root.prepend(canvas);
+      view.canvas = canvas;
+      view.renderTask = page.render({ canvas, viewport });
+      await view.renderTask.promise;
+      if (view.generation !== generation || this.pdf !== pdf) return;
+      view.renderTask = null;
     } catch {
-      view.root.classList.add('is-error');
+      if (view.generation === generation) view.root.classList.add('is-error');
     }
+  }
+
+  private releaseThumbnail(pageNumber: number): void {
+    const view = this.thumbnailViews.get(pageNumber);
+    if (!view) return;
+    view.generation++;
+    view.renderTask?.cancel();
+    view.renderTask = null;
+    view.canvas?.remove();
+    view.canvas = null;
+    view.rendered = false;
   }
 
   private async populateOutline(generation: number): Promise<void> {
@@ -496,8 +565,11 @@ export class PdfReader {
   }
 
   private invalidateVisiblePages(): void {
-    for (const view of this.pageViews.values()) {
-      if (!this.nearViewport(view.root)) continue;
+    const pages = new Set(this.nearbyPages);
+    if (this.pdf) pages.add(this.currentPage);
+    for (const page of pages) {
+      const view = this.pageViews.get(page);
+      if (!view) continue;
       view.generation++;
       view.renderTask?.cancel();
       view.renderTask = null;
@@ -507,12 +579,6 @@ export class PdfReader {
       view.renderedScale = null;
       void this.renderPage(view.number);
     }
-  }
-
-  private nearViewport(element: HTMLElement): boolean {
-    const rect = element.getBoundingClientRect();
-    const viewport = this.elements.viewport.getBoundingClientRect();
-    return rect.bottom >= viewport.top - 1400 && rect.top <= viewport.bottom + 1400;
   }
 
   private isCurrent(view: PageView, generation: number): boolean {
@@ -527,7 +593,9 @@ export class PdfReader {
       const center = viewport.top + viewport.height / 2;
       let bestPage = this.currentPage;
       let bestDistance = Infinity;
-      for (const view of this.pageViews.values()) {
+      for (const page of this.nearbyPages) {
+        const view = this.pageViews.get(page);
+        if (!view) continue;
         const rect = view.root.getBoundingClientRect();
         const distance = Math.abs((rect.top + rect.bottom) / 2 - center);
         if (distance < bestDistance) {
@@ -541,11 +609,10 @@ export class PdfReader {
 
   private setCurrentPage(page: number): void {
     if (!this.pdf || page === this.currentPage) return;
+    this.thumbnailViews.get(this.currentPage)?.root.classList.remove('is-current');
     this.currentPage = page;
     this.events.onPageChanged?.(page, this.pdf.numPages);
-    for (const [number, thumbnail] of this.thumbnailViews) {
-      thumbnail.root.classList.toggle('is-current', number === page);
-    }
+    this.thumbnailViews.get(page)?.root.classList.add('is-current');
   }
 
   private readonly scheduleSelectionUpdate = (): void => {

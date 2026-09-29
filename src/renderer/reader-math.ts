@@ -5,6 +5,10 @@ export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 4;
 export const ZOOM_STEP = 0.2;
 export const MAX_CANVAS_DIMENSION = 8192;
+export const MAX_PAGE_CSS_DIMENSION = 32_768;
+export const MAX_READER_PAGES = 5_000;
+export const THUMBNAIL_MAX_WIDTH = 112;
+export const THUMBNAIL_MAX_HEIGHT = 160;
 
 export function clampZoom(value: number): number {
   if (!Number.isFinite(value)) return 1;
@@ -25,13 +29,32 @@ export function clampPageNumber(page: number, pageCount: number): number {
 export function boundedOutputScale(width: number, height: number, devicePixelRatio = 1): number {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 1;
   const pixelBound = Math.sqrt(MAX_RENDER_PIXELS / (width * height));
-  return Math.max(0.1, Math.min(
+  return Math.min(
     2,
     Math.max(1, devicePixelRatio || 1),
     MAX_CANVAS_DIMENSION / width,
     MAX_CANVAS_DIMENSION / height,
     pixelBound
-  ));
+  );
+}
+
+export function isRenderableViewport(width: number, height: number): boolean {
+  return Number.isFinite(width) &&
+    Number.isFinite(height) &&
+    width > 0 &&
+    height > 0 &&
+    width <= MAX_PAGE_CSS_DIMENSION &&
+    height <= MAX_PAGE_CSS_DIMENSION &&
+    width * height <= 100_000_000;
+}
+
+export function thumbnailScale(width: number, height: number): number {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return 1;
+  return Math.min(
+    0.4,
+    THUMBNAIL_MAX_WIDTH / width,
+    THUMBNAIL_MAX_HEIGHT / height
+  );
 }
 
 export function searchSnippet(text: string, index: number, queryLength: number, radius = 48): string {

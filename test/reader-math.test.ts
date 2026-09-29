@@ -3,15 +3,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_CANVAS_DIMENSION,
+  MAX_PAGE_CSS_DIMENSION,
+  MAX_READER_PAGES,
   MAX_ZOOM,
   MIN_ZOOM,
+  THUMBNAIL_MAX_HEIGHT,
+  THUMBNAIL_MAX_WIDTH,
   boundedOutputScale,
   clampPageNumber,
   clampZoom,
   findPageSearchHits,
   fitWidthScale,
+  isRenderableViewport,
   pageNumberFromNode,
-  searchSnippet
+  searchSnippet,
+  thumbnailScale
 } from '../src/renderer/reader-math.js';
 import { MAX_RENDER_PIXELS } from '../src/shared/constants.js';
 
@@ -36,6 +42,28 @@ describe('reader math and selection mapping', () => {
     expect(width * scale).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION + 0.001);
     expect(height * scale).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION + 0.001);
     expect(width * height * scale * scale).toBeLessThanOrEqual(MAX_RENDER_PIXELS + 1);
+  });
+
+  it('bounds pathological aspect ratios without a minimum scale floor', () => {
+    const width = 1_000_000;
+    const height = 10;
+    const scale = boundedOutputScale(width, height, 4);
+    expect(width * scale).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION + 0.001);
+    expect(height * scale).toBeLessThanOrEqual(MAX_CANVAS_DIMENSION + 0.001);
+    expect(isRenderableViewport(width, height)).toBe(false);
+    expect(isRenderableViewport(MAX_PAGE_CSS_DIMENSION, 10)).toBe(true);
+  });
+
+  it('bounds thumbnail dimensions for extreme page shapes', () => {
+    const width = 1;
+    const height = 1_000_000;
+    const scale = thumbnailScale(width, height);
+    expect(width * scale).toBeLessThanOrEqual(THUMBNAIL_MAX_WIDTH + 0.001);
+    expect(height * scale).toBeLessThanOrEqual(THUMBNAIL_MAX_HEIGHT + 0.001);
+  });
+
+  it('defines an explicit maximum reader page count', () => {
+    expect(MAX_READER_PAGES).toBe(5_000);
   });
 
   it('maps nested selected text back to its PDF page', () => {
