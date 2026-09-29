@@ -8,7 +8,12 @@ import {
 } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import 'pdfjs-dist/web/pdf_viewer.css';
-import type { OpenedPdf, PdfSearchHit } from '../shared/pdf.js';
+import type {
+  OpenedPdf,
+  PdfNormalizedRegion,
+  PdfSearchHit,
+  PdfSelectionUpdate
+} from '../shared/pdf.js';
 import {
   boundedOutputScale,
   clampPageNumber,
@@ -55,7 +60,7 @@ export interface PdfReaderElements {
 export interface PdfReaderEvents {
   onDocumentChanged?(document: OpenedPdf | null, pageCount: number): void;
   onPageChanged?(page: number, pageCount: number): void;
-  onSelectionChanged?(text: string, page: number | null): void;
+  onSelectionChanged?(selection: PdfSelectionUpdate | null): void;
   onStatus?(message: string, error?: boolean): void;
 }
 
@@ -134,6 +139,10 @@ export class PdfReader {
 
   get documentId(): string | null {
     return this.document?.documentId ?? null;
+  }
+
+  get viewEpoch(): number | null {
+    return this.document?.viewEpoch ?? null;
   }
 
   get isFitWidth(): boolean {
@@ -622,12 +631,47 @@ export class PdfReader {
       const selection = window.getSelection();
       const text = selection?.toString().trim() ?? '';
       if (!selection || selection.rangeCount === 0 || !text) {
-        this.events.onSelectionChanged?.('', null);
+        this.events.onSelectionChanged?.(null);
         return;
       }
       const range = selection.getRangeAt(0);
-      const page = pageNumberFromNode(range.commonAncestorContainer);
-      this.events.onSelectionChanged?.(text, page);
+      const startPage = pageNumberFromNode(range.startContainer);
+      const endPage = pageNumberFromNode(range.endContainer);
+      if (startPage === null || endPage === null) {
+        this.events.onSelectionChanged?.(null);
+        return;
+      }
+      const bounds = startPage === endPage ? this.selectionBounds(range, startPage) : undefined;
+      this.events.onSelectionChanged?.({
+        text,
+        startPage: Math.min(startPage, endPage),
+        endPage: Math.max(startPage, endPage),
+        bounds
+      });
     }, 80);
   };
+
+  private selectionBounds(range: Range, pageNumber: number): PdfNormalizedRegion | undefined {
+    const page = this.pageViews.get(pageNumber)?.root;
+    if (!page || typeof range.getBoundingClientRect !== 'function') return undefined;
+    const pageRect = page.getBoundingClientRect();
+    const selectionRect = range.getBoundingClientRect();
+    if (pageRect.width <= 0 || pageRect.height <= 0 ||
+        selectionRect.width <= 0 || selectionRect.height <= 0) {
+      return undefined;
+    }
+    const left = Math.max(pageRect.left, Math.min(pageRect.right, selectionRect.left));
+    const top = Math.max(pageRect.top, Math.min(pageRect.bottom, selectionRect.top));
+    const right = Math.max(left, Math.max(pageRect.left, Math.min(pageRect.right, selectionRect.right)));
+    const bottom = Math.max(top, Math.max(pageRect.top, Math.min(pageRect.bottom, selectionRect.bottom)));
+    const width = right - left;
+    const height = bottom - top;
+    if (width <= 0 || height <= 0) return undefined;
+    return {
+      x: (left - pageRect.left) / pageRect.width,
+      y: (top - pageRect.top) / pageRect.height,
+      width: width / pageRect.width,
+      height: height / pageRect.height
+    };
+  }
 }

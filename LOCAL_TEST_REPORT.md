@@ -25,3 +25,17 @@ This file records exact commands and results after each completed phase.
 - npm run dev — PASS: Electron app started with the Phase-1 renderer and stayed alive until manually stopped.
 
 Visual interaction with the native Open dialog was not automated because the connected workspace exposes terminal/file tools but no desktop/window input connector in this session. The PDF parsing/rendering path is exercised directly in the test suite.
+
+## Phase 2
+
+- npm run typecheck — PASS.
+- npm test — PASS, 5 test files / 28 tests.
+  - Exact page text and stable page references PASS.
+  - Multi-page search and multiple-document isolation PASS.
+  - Stale view-epoch updates are rejected, including reopen A→B→A PASS.
+  - Selection text/page/bounds mapping and invalid normalized bounds rejection PASS.
+  - Full-page PNG and normalized region crop correctness PASS.
+  - Identical-content source deduplication and active-source replacement detection PASS.
+  - Replaced content invalidates stale reads and reopens under a new stable document ID PASS.
+- npm run build — PASS for main, preload, renderer and PDF.js worker.
+- npm run dev — PASS: Electron reached "starting electron app" and remained running until stopped.

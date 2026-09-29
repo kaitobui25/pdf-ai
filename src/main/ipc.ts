@@ -7,10 +7,11 @@ import {
   MCP_CONNECTOR_NAME
 } from '../shared/constants.js';
 import type { RuntimeInfo } from '../shared/api.js';
-import type { PdfOpenResult } from '../shared/pdf.js';
-import { loadPdfSnapshot, pdfOpenError } from './pdf-file.js';
+import type { PdfOpenResult, PdfSelectionUpdate } from '../shared/pdf.js';
+import { PdfDocumentEngine } from './pdf-document-engine.js';
+import { pdfOpenError } from './pdf-file.js';
 
-export function registerIpc(): void {
+export function registerIpc(engine: PdfDocumentEngine): void {
   ipcMain.handle('runtime:info', (): RuntimeInfo => ({
     appName: APP_NAME,
     appId: APP_ID,
@@ -29,9 +30,27 @@ export function registerIpc(): void {
       return { ok: false, error: { code: 'cancelled', message: 'No PDF selected.' } };
     }
     try {
-      return { ok: true, document: await loadPdfSnapshot(filePath) };
+      return { ok: true, document: await engine.openFile(filePath) };
     } catch (error) {
       return { ok: false, error: pdfOpenError(error) };
     }
   });
+  ipcMain.handle(
+    'pdf:set-current-page',
+    (_event, documentId: string, viewEpoch: number, seq: number, page: number): boolean => {
+      return engine.setCurrentPage(documentId, viewEpoch, seq, page);
+    }
+  );
+  ipcMain.handle(
+    'pdf:set-selection',
+    (
+      _event,
+      documentId: string,
+      viewEpoch: number,
+      seq: number,
+      selection: PdfSelectionUpdate | null
+    ): boolean => {
+      return engine.setSelection(documentId, viewEpoch, seq, selection);
+    }
+  );
 }

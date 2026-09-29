@@ -158,7 +158,8 @@ function openedPdf(id: string): OpenedPdf {
     name: id + '.pdf',
     bytes: new Uint8Array([1, 2, 3]),
     size: 3,
-    modifiedAt: '2026-09-29T00:00:00.000Z'
+    modifiedAt: '2026-09-29T00:00:00.000Z',
+    viewEpoch: 1
   };
 }
 
@@ -250,9 +251,9 @@ describe('PdfReader behavior', () => {
   it('extracts selected text with the owning PDF page', async () => {
     pdfjs.documents.push(makePdf(2));
     const elements = createElements();
-    const selections: Array<{ text: string; page: number | null }> = [];
+    const selections: Array<{ text: string; startPage: number; endPage: number } | null> = [];
     const reader = new PdfReader(elements, {
-      onSelectionChanged: (text, page) => selections.push({ text, page })
+      onSelectionChanged: selection => selections.push(selection)
     });
     await reader.open(openedPdf('doc-selection'));
 
@@ -266,7 +267,11 @@ describe('PdfReader behavior', () => {
     document.dispatchEvent(new Event('selectionchange'));
     await vi.advanceTimersByTimeAsync(90);
 
-    expect(selections.at(-1)).toEqual({ text: 'Selectable page text', page: 1 });
+    expect(selections.at(-1)).toMatchObject({
+      text: 'Selectable page text',
+      startPage: 1,
+      endPage: 1
+    });
     reader.destroy();
   });
 

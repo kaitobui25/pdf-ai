@@ -90,3 +90,52 @@ Validation:
 - Corrupt and oversized PDFs are rejected.
 - npm run build: pass.
 - npm run dev: Electron main/preload/renderer start successfully and remain running until stopped.
+
+## Phase 2 — Page-aware document engine
+
+Inspected/reused the Phase-2 CoS patterns from:
+
+- src/main/project-files.ts
+- src/renderer/file-pdf-viewer.ts
+- src/preload/index.ts
+- src/main/session/input.ts
+- src/main/session/store.ts
+- extension/content.js
+- extension/chatgpt-dom.js
+- extension/fiber.js
+
+Patterns reused or simplified:
+
+- Main process owns the native path, immutable file identity and authoritative document registry.
+- Async work checks the exact live document record again after awaits instead of trusting stale renderer state.
+- Renderer state updates carry a per-open view epoch plus monotonic sequence number, so A→B→A cannot replay stale current-page or selection state.
+- Stable page references are document-snapshot-qualified and 1-based.
+- Text extraction/search share one bounded per-document cache and single-flight page extraction.
+- File replacement is detected from dev/inode/size/mtime/ctime and stale document reads fail closed until reopened.
+- Rendered page/region output is bounded by scale, dimensions and total pixels.
+
+PDF-AI-specific document engine:
+
+- listDocuments, getCurrentPage, getSelection, search, readPages, renderPage and renderRegion are implemented as local main-process APIs.
+- Multiple open PDFs remain isolated; the current document is explicit.
+- Selection state stores exact text, page range, stable page references and normalized single-page bounds when available.
+- Full-page and normalized-region PNG rendering runs in the main process using PDF.js plus @napi-rs/canvas.
+- Identical PDF bytes share the same stable document ID while retaining explicit source-file identities; changing an inactive duplicate does not invalidate the active source.
+- Reopening a replaced file removes the old source binding and registers the new content revision under a new stable document ID.
+
+Intentionally omitted in this phase:
+
+- MCP publication, public tunnel configuration, browser bridge/extension pairing, ChatGPT automation and durable conversation/session correlation.
+
+Isolation:
+
+- Document APIs expose document IDs and page metadata; native file paths remain private to the main process.
+- No CoS runtime state, ports, sessions, extension storage or tunnel configuration is accessed.
+
+Validation:
+
+- npm run typecheck: pass.
+- npm test: pass, 5 files / 28 tests.
+- Engine tests cover exact page text, multi-page search, multi-document isolation, stale renderer epochs, selection mapping, page/region image correctness, identical-content sources and file replacement.
+- npm run build: pass.
+- npm run dev: Electron main/preload/renderer start successfully and remain running until stopped.

@@ -68,12 +68,16 @@ const empty = required<HTMLElement>('#reader-empty');
 const searchInput = required<HTMLInputElement>('#pdf-search');
 let searchRequest = 0;
 let openRequest = 0;
+let pageStateSeq = 0;
+let selectionStateSeq = 0;
 
 const reader = new PdfReader(
   { viewport, pages, outline, thumbnails },
   {
     onDocumentChanged: (opened, count) => {
       searchRequest++;
+      pageStateSeq = 0;
+      selectionStateSeq = 0;
       pageCount.textContent = '/ ' + count;
       pageInput.value = count ? '1' : '0';
       empty.hidden = opened !== null;
@@ -83,14 +87,35 @@ const reader = new PdfReader(
     onPageChanged: (page, count) => {
       pageInput.value = String(page);
       pageCount.textContent = '/ ' + count;
+      const documentId = reader.documentId;
+      const viewEpoch = reader.viewEpoch;
+      if (documentId && viewEpoch !== null) {
+        const seq = ++pageStateSeq;
+        void window.pdfAi.setCurrentPage(documentId, viewEpoch, seq, page).catch(error => {
+          status.textContent = error instanceof Error ? error.message : 'Could not update current page.';
+          status.classList.add('is-error');
+        });
+      }
     },
-    onSelectionChanged: (text, page) => {
-      if (!text) {
+    onSelectionChanged: selection => {
+      const documentId = reader.documentId;
+      const viewEpoch = reader.viewEpoch;
+      if (documentId && viewEpoch !== null) {
+        const seq = ++selectionStateSeq;
+        void window.pdfAi.setSelection(documentId, viewEpoch, seq, selection).catch(error => {
+          status.textContent = error instanceof Error ? error.message : 'Could not update selection.';
+          status.classList.add('is-error');
+        });
+      }
+      if (!selection) {
         selectionStatus.textContent = 'No selection';
         return;
       }
-      const clipped = text.length > 80 ? text.slice(0, 77) + '…' : text;
-      selectionStatus.textContent = (page ? 'p.' + page + ' · ' : '') + clipped;
+      const clipped = selection.text.length > 80 ? selection.text.slice(0, 77) + '…' : selection.text;
+      const pages = selection.startPage === selection.endPage
+        ? 'p.' + selection.startPage
+        : 'pp.' + selection.startPage + '–' + selection.endPage;
+      selectionStatus.textContent = pages + ' · ' + clipped;
     },
     onStatus: (message, error) => {
       status.textContent = message;

@@ -15,6 +15,6 @@ export const MCP_CONNECTOR_NAME = 'PDF AI' as const;
 export const MCP_PROTOCOL_VERSION = 1 as const;
 
 export const MAX_PDF_BYTES = 128 * 1024 * 1024;
+export const MAX_PDF_PAGES = 5_000;
 export const MAX_MCP_TEXT_CHARS = 200_000;
 export const MAX_RENDER_PIXELS = 16 * 1024 * 1024;
-

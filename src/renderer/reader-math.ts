@@ -1,4 +1,4 @@
-import { MAX_RENDER_PIXELS } from '../shared/constants.js';
+import { MAX_PDF_PAGES, MAX_RENDER_PIXELS } from '../shared/constants.js';
 import type { PdfSearchHit } from '../shared/pdf.js';
 
 export const MIN_ZOOM = 0.25;
@@ -6,7 +6,7 @@ export const MAX_ZOOM = 4;
 export const ZOOM_STEP = 0.2;
 export const MAX_CANVAS_DIMENSION = 8192;
 export const MAX_PAGE_CSS_DIMENSION = 32_768;
-export const MAX_READER_PAGES = 5_000;
+export const MAX_READER_PAGES = MAX_PDF_PAGES;
 export const THUMBNAIL_MAX_WIDTH = 112;
 export const THUMBNAIL_MAX_HEIGHT = 160;
 

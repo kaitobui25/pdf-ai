@@ -1,4 +1,4 @@
-import type { PdfOpenResult } from './pdf.js';
+import type { PdfOpenResult, PdfSelectionUpdate } from './pdf.js';
 
 export interface RuntimeInfo {
   appName: string;
@@ -11,4 +11,11 @@ export interface RuntimeInfo {
 export interface PdfAiApi {
   runtimeInfo(): Promise<RuntimeInfo>;
   openPdf(): Promise<PdfOpenResult>;
+  setCurrentPage(documentId: string, viewEpoch: number, seq: number, page: number): Promise<boolean>;
+  setSelection(
+    documentId: string,
+    viewEpoch: number,
+    seq: number,
+    selection: PdfSelectionUpdate | null
+  ): Promise<boolean>;
 }

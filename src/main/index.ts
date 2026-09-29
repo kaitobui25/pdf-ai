@@ -2,11 +2,13 @@ import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import { APP_NAME, USER_DATA_FOLDER } from '../shared/constants.js';
 import { registerIpc } from './ipc.js';
+import { PdfDocumentEngine } from './pdf-document-engine.js';
 
 app.setName(APP_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
 
 let mainWindow: BrowserWindow | null = null;
+const documentEngine = new PdfDocumentEngine();
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -55,7 +57,7 @@ if (!hasSingleInstanceLock) {
   });
 
   void app.whenReady().then(() => {
-    registerIpc();
+    registerIpc(documentEngine);
     createWindow();
   });
 
@@ -66,5 +68,8 @@ if (!hasSingleInstanceLock) {
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
   });
-}
 
+  app.on('will-quit', () => {
+    void documentEngine.destroy();
+  });
+}

@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { open, stat as statPath } from 'node:fs/promises';
 import path from 'node:path';
 import { MAX_PDF_BYTES } from '../shared/constants.js';
-import type { OpenedPdf, PdfOpenError } from '../shared/pdf.js';
+import type { PdfOpenError, PdfSnapshot } from '../shared/pdf.js';
 
-interface FileIdentity {
+export interface PdfFileIdentity {
   dev: number;
   ino: number;
   size: number;
@@ -13,7 +13,13 @@ interface FileIdentity {
   ctimeMs: number;
 }
 
-function identityOf(stat: Stats): FileIdentity {
+export interface PdfFileSnapshot {
+  document: PdfSnapshot;
+  filePath: string;
+  identity: PdfFileIdentity;
+}
+
+function identityOf(stat: Stats): PdfFileIdentity {
   return {
     dev: stat.dev,
     ino: stat.ino,
@@ -23,7 +29,7 @@ function identityOf(stat: Stats): FileIdentity {
   };
 }
 
-function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
+export function samePdfFileIdentity(left: PdfFileIdentity, right: PdfFileIdentity): boolean {
   return left.dev === right.dev &&
     left.ino === right.ino &&
     left.size === right.size &&
@@ -40,8 +46,9 @@ function problem(code: PdfOpenError['code'], message: string): PdfOpenError {
   return { code, message };
 }
 
-export async function loadPdfSnapshot(filePath: string): Promise<OpenedPdf> {
-  const handle = await open(filePath, 'r');
+export async function loadPdfSnapshotRecord(filePath: string): Promise<PdfFileSnapshot> {
+  const resolvedPath = path.resolve(filePath);
+  const handle = await open(resolvedPath, 'r');
   try {
     const before = await handle.stat();
     if (!before.isFile()) throw problem('invalid_pdf', 'Choose a regular PDF file.');
@@ -58,18 +65,41 @@ export async function loadPdfSnapshot(filePath: string): Promise<OpenedPdf> {
       offset += chunk.bytesRead;
     }
     const after = identityOf(await handle.stat());
-    if (!sameIdentity(expected, after)) throw problem('changed', 'The PDF changed while it was being read.');
+    const atPath = identityOf(await statPath(resolvedPath));
+    if (!samePdfFileIdentity(expected, after) || !samePdfFileIdentity(expected, atPath)) {
+      throw problem('changed', 'The PDF changed while it was being read.');
+    }
     if (!pdfHeaderPresent(bytes)) throw problem('invalid_pdf', 'The selected file does not contain a PDF header.');
     const digest = createHash('sha256').update(bytes).digest('hex');
     return {
-      documentId: 'pdf-' + digest.slice(0, 32),
-      name: path.basename(filePath),
-      bytes,
-      size: after.size,
-      modifiedAt: new Date(after.mtimeMs).toISOString()
+      document: {
+        documentId: 'pdf-' + digest.slice(0, 32),
+        name: path.basename(resolvedPath),
+        bytes,
+        size: after.size,
+        modifiedAt: new Date(after.mtimeMs).toISOString()
+      },
+      filePath: resolvedPath,
+      identity: after
     };
   } finally {
     await handle.close();
+  }
+}
+
+export async function loadPdfSnapshot(filePath: string): Promise<PdfSnapshot> {
+  return (await loadPdfSnapshotRecord(filePath)).document;
+}
+
+export async function pdfFileIdentityMatches(
+  filePath: string,
+  expected: PdfFileIdentity
+): Promise<boolean> {
+  try {
+    const current = identityOf(await statPath(filePath));
+    return samePdfFileIdentity(expected, current);
+  } catch {
+    return false;
   }
 }
 
