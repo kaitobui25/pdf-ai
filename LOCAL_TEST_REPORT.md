@@ -52,3 +52,25 @@ Visual interaction with the native Open dialog was not automated because the con
   - Concurrent calls across two PDFs remain isolated PASS.
 - npm run build — PASS.
 - npm run dev — PASS: Electron started and logged a secret loopback PDF AI MCP URL.
+
+## Phase 4
+
+- npm run typecheck — PASS.
+- npm test — PASS, 9 test files / 45 tests, serialized because multiple bridge suites intentionally use the fixed production port range 8875–8879.
+  - /hello identity and dedicated port range PASS.
+  - Wrong Chrome-extension origin, app ID and protocol rejected PASS.
+  - Missing Origin on extension pairing is accepted for Chrome host-permission compatibility while extension identity remains bound PASS.
+  - Missing/wrong/stale bearer token and wrong extension ID rejected PASS.
+  - Port collision advances within 8875–8879 PASS.
+  - Pairing and pending commands survive bridge restart PASS.
+  - Command remains at-least-once until durable ACK; duplicate ACK returns the same receipt PASS.
+  - Simulated durable-save failure does not publish an uncommitted command or ACK PASS.
+  - Request body and rolling rate limits PASS.
+  - Extension scans only 8875–8879 and uses the exact pair/protected route contract PASS.
+  - Extension ACK is stored before transport and retried after simulated service-worker restart PASS.
+  - Real app-bridge + extension-client test recovers a lost ACK response after server commit PASS.
+- npm run build — PASS.
+- node --check extension/bridge-client.js, extension/background.js and extension/popup.js — PASS.
+- extension/manifest.json parse — PASS; content_scripts absent.
+- Extension forbidden-reference scan — PASS; no 8765–8769 or ChatGPT references.
+- npm run dev — PASS: Electron logged both a secret loopback PDF AI MCP URL and PDF-AI browser bridge at 127.0.0.1:8875.

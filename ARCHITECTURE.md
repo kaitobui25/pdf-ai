@@ -24,3 +24,9 @@ The renderer uses PDF.js for continuous reading. Page canvases and text layers a
 The PDF AI MCP server is a separate loopback-only HTTP listener on an OS-assigned local port. Each app start generates a fresh unguessable MCP path. The server publishes exactly seven PDF tools and every tool addresses content through documentId; no tool accepts an arbitrary filesystem path.
 
 MCP handlers call the same authoritative PdfDocumentEngine used by the reader state. Tool schemas are strict Zod objects, request bodies are bounded, page/text/image outputs are bounded, and rendered image tools return page metadata plus a PNG content block.
+
+## Browser bridge boundary
+
+The browser bridge is a second local HTTP service and never shares the MCP listener. It binds only to 127.0.0.1 on the fixed PDF-AI range 8875–8879. Discovery uses GET /hello; pairing binds one Chrome extension ID to a PDF-AI token and protected requests require app ID, protocol version, extension ID and bearer token.
+
+Bridge state is durable under PDF-AI userData. Commands are identified before publication and are returned at least once until an ACK is durably recorded. The MV3 extension keeps its connection in chrome.storage.local and pending ACKs in chrome.storage.session, so service-worker suspension does not lose a final ACK. Phase 4 exposes only health/transport foundations; it does not automate ChatGPT.

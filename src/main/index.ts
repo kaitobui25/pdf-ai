@@ -1,9 +1,18 @@
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
-import { APP_NAME, USER_DATA_FOLDER } from '../shared/constants.js';
+import {
+  APP_NAME,
+  BRIDGE_STATE_FILE,
+  USER_DATA_FOLDER
+} from '../shared/constants.js';
 import { registerIpc } from './ipc.js';
 import { PdfDocumentEngine } from './pdf-document-engine.js';
 import { startPdfMcpServer, type PdfMcpEndpoint } from './mcp.js';
+import {
+  JsonBridgeStateStore,
+  startBrowserBridge,
+  type BrowserBridge
+} from './bridge.js';
 
 app.setName(APP_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
@@ -11,6 +20,7 @@ app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
 let mainWindow: BrowserWindow | null = null;
 const documentEngine = new PdfDocumentEngine();
 let mcpEndpoint: PdfMcpEndpoint | null = null;
+let browserBridge: BrowserBridge | null = null;
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -61,7 +71,11 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(async () => {
     registerIpc(documentEngine);
     mcpEndpoint = await startPdfMcpServer(documentEngine);
+    browserBridge = await startBrowserBridge(
+      new JsonBridgeStateStore(path.join(app.getPath('userData'), BRIDGE_STATE_FILE))
+    );
     console.info('PDF AI MCP:', mcpEndpoint.url);
+    console.info('PDF-AI browser bridge:', browserBridge.url);
     createWindow();
   }).catch(error => {
     console.error('PDF-AI startup failed:', error);
@@ -78,6 +92,7 @@ if (!hasSingleInstanceLock) {
 
   app.on('will-quit', () => {
     void Promise.all([
+      browserBridge?.stop() ?? Promise.resolve(),
       mcpEndpoint?.stop() ?? Promise.resolve(),
       documentEngine.destroy()
     ]);

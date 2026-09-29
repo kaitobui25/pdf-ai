@@ -91,49 +91,6 @@ Validation:
 - npm run build: pass.
 - npm run dev: Electron main/preload/renderer start successfully and remain running until stopped.
 
-## Phase 3 — Local MCP server
-
-Inspected/reused the Phase-3 CoS patterns from:
-
-- src/main/mcp/server.ts
-- src/main/mcp/tools.ts
-- src/main/mcp/tool-declarations.ts
-- src/main/mcp/kernel.ts
-- src/main/mcp/inbound.ts
-
-Patterns reused or simplified:
-
-- Keep MCP on its own loopback listener, separate from the browser bridge.
-- Generate an unguessable per-process endpoint path instead of publishing a bare local route.
-- Apply loopback Host/Origin validation and bound request bodies before MCP dispatch.
-- Register only the tools the connector actually advertises; unknown names stay unknown at the protocol layer.
-- Use Zod as runtime validation authority and keep tool-specific page/text/image bounds in the owning subsystem.
-
-PDF-AI-specific MCP work:
-
-- Added exactly seven tools: pdf_list_documents, pdf_get_current_page, pdf_get_selection, pdf_search, pdf_read_pages, pdf_render_page and pdf_render_region.
-- Tool schemas accept only document IDs, pages, search text, render scale and normalized regions. No arbitrary filesystem path is exposed.
-- Engine errors are returned as explicit tool-level errors with stable error codes.
-- Render tools return document/page/reference metadata plus a PNG MCP image content block.
-- The Electron main process starts the MCP endpoint with the shared PdfDocumentEngine and logs the local endpoint for tunnel setup.
-
-Intentionally omitted in this phase:
-
-- Browser extension transport, Chrome pairing, command delivery, ChatGPT automation, public tunnel provisioning and conversation/session ownership.
-
-Isolation:
-
-- MCP uses its own listener and secret path; it does not reuse browser bridge ports 8875–8879 and does not touch CoS ports/state.
-
-Validation:
-
-- npm run typecheck: pass.
-- npm test: pass, 6 files / 33 tests.
-- MCP client SDK successfully connects over real loopback HTTP, discovers exactly seven tools and calls list/current/selection/search/read/render page/render region.
-- Tests cover invalid document IDs/pages, schema/query/page-range bounds, concurrent calls and multiple PDFs.
-- npm run build: pass.
-- npm run dev: Electron starts and prints a loopback PDF AI MCP endpoint, then remains running until stopped.
-
 ## Phase 2 — Page-aware document engine
 
 Inspected/reused the Phase-2 CoS patterns from:
@@ -182,3 +139,105 @@ Validation:
 - Engine tests cover exact page text, multi-page search, multi-document isolation, stale renderer epochs, selection mapping, page/region image correctness, identical-content sources and file replacement.
 - npm run build: pass.
 - npm run dev: Electron main/preload/renderer start successfully and remain running until stopped.
+
+## Phase 3 — Local MCP server
+
+Inspected/reused the Phase-3 CoS patterns from:
+
+- src/main/mcp/server.ts
+- src/main/mcp/tools.ts
+- src/main/mcp/tool-declarations.ts
+- src/main/mcp/kernel.ts
+- src/main/mcp/inbound.ts
+
+Patterns reused or simplified:
+
+- Keep MCP on its own loopback listener, separate from the browser bridge.
+- Generate an unguessable per-process endpoint path instead of publishing a bare local route.
+- Apply loopback Host/Origin validation and bound request bodies before MCP dispatch.
+- Register only the tools the connector actually advertises; unknown names stay unknown at the protocol layer.
+- Use Zod as runtime validation authority and keep tool-specific page/text/image bounds in the owning subsystem.
+
+PDF-AI-specific MCP work:
+
+- Added exactly seven tools: pdf_list_documents, pdf_get_current_page, pdf_get_selection, pdf_search, pdf_read_pages, pdf_render_page and pdf_render_region.
+- Tool schemas accept only document IDs, pages, search text, render scale and normalized regions. No arbitrary filesystem path is exposed.
+- Engine errors are returned as explicit tool-level errors with stable error codes.
+- Render tools return document/page/reference metadata plus a PNG MCP image content block.
+- The Electron main process starts the MCP endpoint with the shared PdfDocumentEngine and logs the local endpoint for tunnel setup.
+
+Intentionally omitted in this phase:
+
+- Browser extension transport, Chrome pairing, command delivery, ChatGPT automation, public tunnel provisioning and conversation/session ownership.
+
+Isolation:
+
+- MCP uses its own listener and secret path; it does not reuse browser bridge ports 8875–8879 and does not touch CoS ports/state.
+
+Validation:
+
+- npm run typecheck: pass.
+- npm test: pass, 6 files / 33 tests.
+- MCP client SDK successfully connects over real loopback HTTP, discovers exactly seven tools and calls list/current/selection/search/read/render page/render region.
+- Tests cover invalid document IDs/pages, schema/query/page-range bounds, concurrent calls and multiple PDFs.
+- npm run build: pass.
+- npm run dev: Electron starts and prints a loopback PDF AI MCP endpoint, then remains running until stopped.
+
+## Phase 4 — Browser bridge and MV3 extension foundation
+
+Inspected/reused the Phase-4 CoS patterns from:
+
+- src/main/bridge.ts
+- src/main/bridge-ports.ts
+- src/main/extension-path.ts
+- extension/background.js
+- extension/content.js
+- extension/chatgpt-dom.js
+- extension/fiber.js
+- src/main/session/input.ts
+- src/main/session/store.ts
+
+Patterns reused or simplified:
+
+- Scan a fixed set of loopback ports and require an app/protocol identity match before pairing.
+- Keep the pairing token in extension service-worker storage rather than page/content-script state.
+- Bind credentials to the exact extension ID and reject any present Origin that is not that Chrome-extension Origin; allow missing Origin because Chrome may omit it for extension fetches with loopback host permission.
+- Use explicit app/protocol/extension headers plus bearer token on protected requests.
+- Bound request bodies, command payloads, queue sizes and rate limits.
+- Persist command state before publication; ACK removes a command only after the receipt snapshot saves successfully.
+- Keep an extension-side ACK outbox in storage.session so MV3 suspension/restart can retry a lost response.
+- Treat command IDs and ACK receipts as idempotency boundaries.
+
+PDF-AI-specific bridge/extension work:
+
+- Browser bridge binds only 127.0.0.1 and only ports 8875–8879; collision advances to the next PDF-AI port and all-five-busy fails startup.
+- GET /hello identifies app/bridge id pdf-ai and protocol 1.
+- POST /pair mints a 32-byte base64url token for one exact Chrome extension ID; wrong present origins are rejected while the Chrome host-permission missing-Origin case remains compatible. Protected routes reject wrong app, protocol, extension, present origin or token.
+- Added request-body and command-payload limits, a rolling request rate limit, durable command queue, bounded receipt history and explicit wake generation.
+- Added GET /status, GET /commands/next and idempotent POST /commands/ack foundation routes.
+- Bridge state is stored only under PDF-AI userData in pdf-ai.bridge-state.json.
+- Added a dedicated MV3 extension with storage + alarms permissions, local bridge client, startup/alarm reconnect maintenance and a minimal health popup.
+- Extension scans only 8875–8879, stores port/token in chrome.storage.local, stores ACK outbox in chrome.storage.session, and contains no content script or ChatGPT automation.
+- Browser bridge and extension client are tested together over real HTTP, including a simulated lost ACK response followed by service-worker client recreation and idempotent ACK replay.
+
+Intentionally omitted in this phase:
+
+- Opening or choosing ChatGPT tabs, DOM/fiber observation, prompt/file sending, conversation ownership, response correlation and local AI chat projection. Those begin only after the mandatory user checkpoint.
+
+Isolation:
+
+- The extension has its own manifest and PDF-AI storage keys.
+- No extension code references CoS ports 8765–8769, CoS runtime state or ChatGPT.
+- The MCP tunnel remains separate from the browser bridge; the bridge stays local on 127.0.0.1.
+
+Validation:
+
+- npm run typecheck: pass.
+- npm test: pass, 9 files / 45 tests.
+- Bridge tests cover wrong origin/app/protocol, missing/wrong/stale tokens, port collision, bridge restart, durable write failure, body/rate bounds and idempotent ACK.
+- Extension tests cover fixed-port discovery, identity/protocol filtering, protected headers, persistent connection state and ACK retry after simulated MV3 restart.
+- Real bridge/extension integration test covers pair/status, command delivery and lost-ACK recovery.
+- npm run build: pass.
+- node --check passes for all extension JavaScript and the manifest parses.
+- Extension scan finds no CoS bridge ports, ChatGPT references or content_scripts declaration.
+- npm run dev: Electron starts both the secret local MCP endpoint and browser bridge on 127.0.0.1:8875, then remains running until stopped.

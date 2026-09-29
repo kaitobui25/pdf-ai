@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PDF-AI Bridge</title>
+    <style>
+      body { font: 13px system-ui, sans-serif; margin: 14px; min-width: 250px; color: #202124; }
+      h1 { font-size: 15px; margin: 0 0 10px; }
+      #status { margin: 0 0 12px; line-height: 1.45; white-space: pre-line; }
+      button { font: inherit; padding: 6px 10px; }
+    </style>
+  </head>
+  <body>
+    <h1>PDF-AI Bridge</h1>
+    <p id="status">Checking local connection…</p>
+    <button id="reconnect" type="button">Reconnect</button>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

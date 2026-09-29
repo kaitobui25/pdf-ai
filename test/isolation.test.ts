@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   APP_ID,
+  BRIDGE_STATE_FILE,
   BRIDGE_ID,
   BRIDGE_PORTS,
   CONFIG_FILE,
@@ -19,6 +20,7 @@ describe('PDF-AI isolation', () => {
     expect(CONFIG_FILE).toMatch(/^pdf-ai\./);
     expect(SECRETS_FILE).toMatch(/^pdf-ai\./);
     expect(SESSIONS_FOLDER).toMatch(/^pdf-ai-/);
+    expect(BRIDGE_STATE_FILE).toMatch(/^pdf-ai\./);
   });
 
   it('only uses the dedicated bridge port range', () => {
