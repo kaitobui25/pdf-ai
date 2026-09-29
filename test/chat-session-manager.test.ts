@@ -1,0 +1,198 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  ChatSessionManager,
+  MemoryChatStateStore
+} from '../src/main/chat-session-manager.js';
+import { PdfDocumentEngine } from '../src/main/pdf-document-engine.js';
+import type { BridgeCommand } from '../src/main/bridge.js';
+
+const temporary = new Set<string>();
+const engines = new Set<PdfDocumentEngine>();
+
+async function tempDir(): Promise<string> {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'pdf-ai-chat-test-'));
+  temporary.add(directory);
+  return directory;
+}
+
+async function samplePdf(text: string): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage([400, 300]);
+  page.drawText(text, { x: 36, y: 240, size: 18, font });
+  return pdf.save();
+}
+
+function engine(): PdfDocumentEngine {
+  const value = new PdfDocumentEngine();
+  engines.add(value);
+  return value;
+}
+
+function fakeBridge(commands: BridgeCommand[]) {
+  return {
+    enqueueCommand: async (type: string, payload: unknown): Promise<BridgeCommand> => {
+      const command: BridgeCommand = {
+        id: (commands.length + 1).toString(16).padStart(24, '0'),
+        type,
+        payload,
+        createdAt: Date.now()
+      };
+      commands.push(command);
+      return command;
+    }
+  };
+}
+
+afterEach(async () => {
+  await Promise.all([...engines].map(value => value.destroy()));
+  engines.clear();
+  await Promise.all([...temporary].map(directory => rm(directory, { recursive: true, force: true })));
+  temporary.clear();
+});
+
+describe('PDF-AI chat session manager', () => {
+  it('durably frames one owned input and correlates only exact conversation events', async () => {
+    const directory = await tempDir();
+    const filePath = path.join(directory, 'paper.pdf');
+    await writeFile(filePath, await samplePdf('Evidence on page one'));
+    const documents = engine();
+    const opened = await documents.openFile(filePath);
+    documents.setSelection(opened.documentId, opened.viewEpoch, 1, {
+      text: 'Evidence', startPage: 1, endPage: 1
+    });
+    const commands: BridgeCommand[] = [];
+    const store = new MemoryChatStateStore();
+    const manager = new ChatSessionManager(documents, store, fakeBridge(commands));
+
+    const started = await manager.send({
+      documentId: opened.documentId,
+      text: 'Explain this selection',
+      scope: 'selection',
+      attachDocument: true
+    });
+    expect(started.state).toBe('sending');
+    expect(started.pendingInputId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.type).toBe('chat_send');
+    const payload = commands[0]?.payload as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId: null,
+      attachDocument: true
+    });
+    expect(String(payload.prompt)).toContain(`[[PDF-AI:${started.sessionId}:${started.pendingInputId}]]`);
+    expect(String(payload.prompt)).toContain('pdf_get_selection');
+    expect(JSON.stringify(payload)).not.toContain(filePath);
+
+    const conversationId = '12345678-abcd-4abc-8abc-1234567890ab';
+    const wrong = await manager.acceptBridgeEvents([{
+      eventId: 'wrong-conversation-1',
+      kind: 'input_sent',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      messageId: 'user-1',
+      time: Date.now()
+    }]);
+    expect(wrong[0]).toMatchObject({ status: 'ok' });
+
+    const conflict = await manager.acceptBridgeEvents([{
+      eventId: 'wrong-conversation-2',
+      kind: 'assistant_message',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId,
+      messageId: 'assistant-wrong',
+      text: 'wrong',
+      final: true,
+      time: Date.now()
+    }]);
+    expect(conflict[0]).toMatchObject({ status: 'failed', error: 'conversation_ownership_mismatch' });
+
+    const acceptedConversation = (await manager.getSession(opened.documentId))?.conversationId;
+    expect(acceptedConversation).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+    const final = await manager.acceptBridgeEvents([{
+      eventId: 'assistant-final-1',
+      kind: 'assistant_message',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId: acceptedConversation,
+      messageId: 'assistant-1',
+      turnId: 'turn-1',
+      requestId: 'request-1',
+      text: `The evidence is on pdf://${opened.documentId}/page/1.`,
+      final: true,
+      time: Date.now()
+    }]);
+    expect(final[0]).toMatchObject({ status: 'ok' });
+    const completed = await manager.getSession(opened.documentId);
+    expect(completed).toMatchObject({ state: 'complete', pendingInputId: null });
+    expect(completed?.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      final: true,
+      messageId: 'assistant-1',
+      turnId: 'turn-1',
+      requestId: 'request-1',
+      pageReferences: [{ documentId: opened.documentId, page: 1 }]
+    });
+
+    const replay = await manager.acceptBridgeEvents([{
+      eventId: 'assistant-final-1',
+      kind: 'assistant_message',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId: acceptedConversation,
+      messageId: 'assistant-1',
+      text: 'duplicate should be ignored',
+      final: true,
+      time: Date.now()
+    }]);
+    expect(replay[0]).toMatchObject({ status: 'ok' });
+    expect((await manager.getSession(opened.documentId))?.messages.at(-1)?.text)
+      .toContain('The evidence is on');
+  });
+
+  it('keeps two PDFs in separate sessions and preserves a pending input across manager restart', async () => {
+    const directory = await tempDir();
+    const firstPath = path.join(directory, 'first.pdf');
+    const secondPath = path.join(directory, 'second.pdf');
+    await writeFile(firstPath, await samplePdf('First document'));
+    await writeFile(secondPath, await samplePdf('Second document'));
+    const documents = engine();
+    const first = await documents.openFile(firstPath);
+    const second = await documents.openFile(secondPath);
+    const commands: BridgeCommand[] = [];
+    const store = new MemoryChatStateStore();
+    const bridge = fakeBridge(commands);
+    const manager = new ChatSessionManager(documents, store, bridge);
+
+    const firstSession = await manager.send({ documentId: first.documentId, text: 'Question A', scope: 'document' });
+    const secondSession = await manager.send({ documentId: second.documentId, text: 'Question B', scope: 'document' });
+    expect(firstSession.sessionId).not.toBe(secondSession.sessionId);
+    expect(firstSession.pendingInputId).not.toBe(secondSession.pendingInputId);
+
+    const restarted = new ChatSessionManager(documents, store, bridge);
+    await restarted.initialize();
+    expect(await restarted.getSession(first.documentId)).toMatchObject({
+      sessionId: firstSession.sessionId,
+      pendingInputId: firstSession.pendingInputId,
+      state: 'sending'
+    });
+    expect(await restarted.getSession(second.documentId)).toMatchObject({
+      sessionId: secondSession.sessionId,
+      pendingInputId: secondSession.pendingInputId,
+      state: 'sending'
+    });
+  });
+});

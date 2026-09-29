@@ -1,5 +1,6 @@
 import type { PdfOpenResult, PdfSelectionUpdate } from './pdf.js';
 import type { TunnelConnectInput, TunnelConnectionStatus } from './tunnel.js';
+import type { ChatSendInput, ChatSessionSnapshot } from './chat.js';
 
 export interface RuntimeInfo {
   appName: string;
@@ -22,4 +23,6 @@ export interface PdfAiApi {
   tunnelStatus(): Promise<TunnelConnectionStatus>;
   tunnelConnect(input: TunnelConnectInput): Promise<TunnelConnectionStatus>;
   tunnelDisconnect(): Promise<TunnelConnectionStatus>;
+  chatSession(documentId: string): Promise<ChatSessionSnapshot | null>;
+  chatSend(input: ChatSendInput): Promise<ChatSessionSnapshot>;
 }

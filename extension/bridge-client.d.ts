@@ -36,10 +36,12 @@ export interface PdfAiBridgeClient {
   ackCommand(body: Record<string, unknown>): Promise<BridgeResult>;
   discover(): Promise<{ port: number; greeting: unknown } | null>;
   drainAckOutbox(): Promise<BridgeResult>;
-  getNextCommand(): Promise<BridgeResult>;
+  getDocumentChunk(documentId: string, offset: number, limit?: number): Promise<BridgeResult>;
+  getNextCommand(waitMs?: number): Promise<BridgeResult>;
   getStatus(): Promise<BridgeResult>;
   health(): Promise<BridgeHealth>;
   pair(): Promise<BridgeResult>;
+  postEvents(events: unknown[]): Promise<BridgeResult>;
   reconnect(): Promise<BridgeHealth>;
 }
 

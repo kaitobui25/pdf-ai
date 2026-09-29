@@ -9,17 +9,31 @@ import {
 import type { RuntimeInfo } from '../shared/api.js';
 import type { PdfOpenResult, PdfSelectionUpdate } from '../shared/pdf.js';
 import type { TunnelConnectInput, TunnelConnectionStatus } from '../shared/tunnel.js';
+import type { ChatSendInput, ChatSessionSnapshot } from '../shared/chat.js';
 import { z } from 'zod';
 import { PdfDocumentEngine } from './pdf-document-engine.js';
 import { pdfOpenError } from './pdf-file.js';
 import { TunnelManager } from './tunnel-manager.js';
+import { ChatSessionManager } from './chat-session-manager.js';
 
 const tunnelConnectSchema = z.object({
   tunnelId: z.string().min(1).max(80),
   apiKey: z.string().max(512).optional()
 }).strict();
 
-export function registerIpc(engine: PdfDocumentEngine, tunnelManager: TunnelManager): void {
+const documentIdSchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9_-]+$/);
+const chatSendSchema = z.object({
+  documentId: documentIdSchema,
+  text: z.string().min(1).max(20_000),
+  scope: z.enum(['selection', 'page', 'document', 'custom']),
+  attachDocument: z.boolean().optional()
+}).strict();
+
+export function registerIpc(
+  engine: PdfDocumentEngine,
+  tunnelManager: TunnelManager,
+  chatManager: ChatSessionManager
+): void {
   ipcMain.handle('runtime:info', (): RuntimeInfo => ({
     appName: APP_NAME,
     appId: APP_ID,
@@ -67,4 +81,8 @@ export function registerIpc(engine: PdfDocumentEngine, tunnelManager: TunnelMana
     return tunnelManager.connect(parsed);
   });
   ipcMain.handle('tunnel:disconnect', (): Promise<TunnelConnectionStatus> => tunnelManager.disconnect());
+  ipcMain.handle('chat:session', (_event, documentId: unknown): Promise<ChatSessionSnapshot | null> =>
+    chatManager.getSession(documentIdSchema.parse(documentId)));
+  ipcMain.handle('chat:send', (_event, input: unknown): Promise<ChatSessionSnapshot> =>
+    chatManager.send(chatSendSchema.parse(input) as ChatSendInput));
 }

@@ -112,6 +112,34 @@ describe('PdfDocumentEngine', () => {
     expect((await store.getCurrentPage()).documentId).toBe(second.documentId);
   });
 
+  it('serves bounded upload chunks by document id and rejects changed backing files', async () => {
+    const directory = await tempDir();
+    const filePath = path.join(directory, 'upload.pdf');
+    const bytes = await textPdf(['Upload bytes']);
+    await writeFile(filePath, bytes);
+    const store = engine();
+    const opened = await store.openFile(filePath);
+
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    while (true) {
+      const chunk = await store.readDocumentChunk(opened.documentId, offset, 97);
+      expect(chunk.documentId).toBe(opened.documentId);
+      expect(chunk.name).toBe('upload.pdf');
+      expect(chunk.mimeType).toBe('application/pdf');
+      expect(chunk.offset).toBe(offset);
+      chunks.push(Buffer.from(chunk.base64, 'base64'));
+      offset = chunk.nextOffset;
+      if (chunk.done) break;
+    }
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from(bytes));
+
+    await writeFile(filePath, await textPdf(['Changed upload bytes']));
+    await expect(store.readDocumentChunk(opened.documentId, 0, 97)).rejects.toMatchObject({
+      code: 'document_changed'
+    });
+  });
+
   it('rejects stale renderer epochs when the same document is reopened after another document', async () => {
     const directory = await tempDir();
     const firstPath = path.join(directory, 'epoch-a.pdf');

@@ -195,8 +195,32 @@ export function createBridgeClient({
     return protectedRequest('/status', { method: 'GET' });
   }
 
-  async function getNextCommand() {
-    return protectedRequest('/commands/next', { method: 'GET' });
+  async function getNextCommand(waitMs = 0) {
+    const bounded = Number.isFinite(waitMs) ? Math.max(0, Math.min(25_000, Math.floor(waitMs))) : 0;
+    const suffix = bounded ? `?wait=${bounded}` : '';
+    return protectedRequest('/commands/next' + suffix, { method: 'GET' });
+  }
+
+  async function postEvents(events) {
+    if (!Array.isArray(events) || events.length < 1 || events.length > 64) {
+      return { ok: false, status: 0, data: null, error: 'invalid_event_batch' };
+    }
+    return protectedRequest('/events', {
+      method: 'POST',
+      body: JSON.stringify({ events })
+    });
+  }
+
+  async function getDocumentChunk(documentId, offset, limit = 256 * 1024) {
+    if (typeof documentId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(documentId)) {
+      return { ok: false, status: 0, data: null, error: 'invalid_document_id' };
+    }
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 256 * 1024) {
+      return { ok: false, status: 0, data: null, error: 'invalid_document_range' };
+    }
+    return protectedRequest(`/documents/${encodeURIComponent(documentId)}/file?offset=${offset}&limit=${limit}`, {
+      method: 'GET'
+    });
   }
 
   async function readAckOutbox() {
@@ -270,10 +294,12 @@ export function createBridgeClient({
     ackCommand,
     discover,
     drainAckOutbox,
+    getDocumentChunk,
     getNextCommand,
     getStatus,
     health,
     pair,
+    postEvents,
     reconnect
   };
 }

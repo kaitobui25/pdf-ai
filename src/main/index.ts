@@ -3,6 +3,7 @@ import { app, BrowserWindow } from 'electron';
 import {
   APP_NAME,
   BRIDGE_STATE_FILE,
+  CHAT_STATE_FILE,
   CONFIG_FILE,
   SECRETS_FILE,
   TUNNEL_RUNTIME_FOLDER,
@@ -20,6 +21,7 @@ import { JsonTunnelConfigStore } from './tunnel-config.js';
 import { ElectronTunnelCredentialStore } from './tunnel-credential.js';
 import { TunnelManager } from './tunnel-manager.js';
 import { TunnelRuntimeProvider } from './tunnel-runtime.js';
+import { ChatSessionManager, JsonChatStateStore } from './chat-session-manager.js';
 
 app.setName(APP_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
@@ -29,6 +31,7 @@ const documentEngine = new PdfDocumentEngine();
 let mcpEndpoint: PdfMcpEndpoint | null = null;
 let browserBridge: BrowserBridge | null = null;
 let tunnelManager: TunnelManager | null = null;
+let chatManager: ChatSessionManager | null = null;
 let shutdownStarted = false;
 let shutdownComplete = false;
 
@@ -88,10 +91,21 @@ if (!hasSingleInstanceLock) {
       new TunnelRuntimeProvider(path.join(userData, TUNNEL_RUNTIME_FOLDER))
     );
     await tunnelManager.initialize();
-    registerIpc(documentEngine, tunnelManager);
-    browserBridge = await startBrowserBridge(
-      new JsonBridgeStateStore(path.join(userData, BRIDGE_STATE_FILE))
+    chatManager = new ChatSessionManager(
+      documentEngine,
+      new JsonChatStateStore(path.join(userData, CHAT_STATE_FILE))
     );
+    await chatManager.initialize();
+    registerIpc(documentEngine, tunnelManager, chatManager);
+    browserBridge = await startBrowserBridge(
+      new JsonBridgeStateStore(path.join(userData, BRIDGE_STATE_FILE)),
+      {
+        onEvents: events => chatManager!.acceptBridgeEvents(events),
+        readDocumentChunk: (documentId, offset, limit) =>
+          documentEngine.readDocumentChunk(documentId, offset, limit)
+      }
+    );
+    chatManager.setBridge(browserBridge);
     console.info('PDF AI MCP: listening on 127.0.0.1:' + mcpEndpoint.port);
     console.info('PDF-AI browser bridge:', browserBridge.url);
     createWindow();

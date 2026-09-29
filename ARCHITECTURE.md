@@ -38,4 +38,14 @@ On Connect, the supervisor passes the restricted control-plane key and the curre
 
 The browser bridge is a second local HTTP service and never shares the MCP listener. It binds only to 127.0.0.1 on the fixed PDF-AI range 8875–8879. Discovery uses GET /hello; pairing binds one Chrome extension ID to a PDF-AI token and protected requests require app ID, protocol version, extension ID and bearer token.
 
-Bridge state is durable under PDF-AI userData. Commands are identified before publication and are returned at least once until an ACK is durably recorded. The MV3 extension keeps its connection in chrome.storage.local and pending ACKs in chrome.storage.session, so service-worker suspension does not lose a final ACK. Phase 4 exposes only health/transport foundations; it does not automate ChatGPT.
+Bridge state is durable under PDF-AI userData. Commands are identified before publication and are returned at least once until an ACK is durably recorded. The MV3 extension keeps its connection in chrome.storage.local and pending ACKs in chrome.storage.session, so service-worker suspension does not lose a final ACK.
+
+## ChatGPT automation boundary
+
+Phase 5 keeps browser ownership outside the renderer. Electron creates a durable PDF-AI session/input and queues a `chat_send` command containing only controlled document/session identities, prompt text and safe PDF metadata. The extension service worker owns the exact ChatGPT tab/conversation binding; it never interprets the user's currently active arbitrary tab as a target. Fresh chats are created by PDF-AI, and later sends may reuse only the exact conversation already bound to the same PDF-AI session.
+
+The content script refuses a non-empty user draft, a generating composer, ambiguous upload controls, a route mismatch or an unowned/reloaded Chrome document. Prompt delivery is idempotent through a PDF-AI ownership marker and success requires a new native user-message row carrying that exact marker; a JavaScript click, composer clear or Stop button is not a send receipt. Assistant revisions are observed only after the exact owned user message.
+
+PDF bytes remain main-process-owned. The extension can request bounded chunks only for a `documentId` already registered in `PdfDocumentEngine`; the engine rechecks the file identity before and after each read and never returns a native path. Content-to-background requests are fenced by the owned tab plus Chrome `sender.documentId` and a per-document token, so a retired document after reload cannot continue using a newer tab lifetime.
+
+Browser observations enter a bounded durable extension outbox before transport, then a protected `/events` bridge route. Electron stores the PDF-AI session/input/conversation/message correlation in `pdf-ai.chat-state.json`; replayed event IDs are idempotent and a conflicting document/input/conversation identity is rejected rather than guessed.

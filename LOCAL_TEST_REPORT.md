@@ -96,3 +96,20 @@ Visual interaction with the native Open dialog was not automated because the con
 - Secret regression scan — PASS: application source contains no console statement that logs the full MCP URL; tunnel key/MCP URL identifiers occur only at the intended main-process environment boundary.
 - git diff --check — PASS (line-ending notices only).
 - npm run dev — PASS: Electron opened a `PDF-AI` window. Startup output was `PDF AI MCP: listening on 127.0.0.1:63480` and `PDF-AI browser bridge: http://127.0.0.1:8875`; no MCP secret path was printed. `GET /hello` returned `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1. The PDF-AI tunnel runtime directory did not exist after startup, proving startup did not prepare/download the runtime. An already-running Chat On Steroids tunnel-client at `C:\\Program Files\\Chat On Steroids\\resources\\tunnel\\tunnel-client.exe` remained running and untouched. Ctrl-C stopped the PDF-AI window and bridge cleanly.
+
+## Phase 5
+
+- npm run typecheck — PASS.
+- npm test — PASS, 16 test files / 69 tests.
+  - Durable chat session/input framing and exact conversation correlation PASS.
+  - Multiple PDF sessions remain isolated and pending inputs survive manager reconstruction PASS.
+  - Registered PDF byte chunks reconstruct the exact file, expose no path and reject changed backing files PASS.
+  - Protected bridge `/events` and document chunk routes plus command long-poll PASS.
+  - Browser automation ignores an unrelated active ChatGPT tab, creates an inactive owned chat, and reuses only its bound conversation PASS.
+  - Same-tab stale Chrome `sender.documentId` after reload cannot fetch PDF chunks PASS.
+  - Content DOM test reads ownership markers only from native user messages and recognizes exact ChatGPT conversation/composer/send controls PASS.
+- npm run build — PASS for main, preload and renderer.
+- node --check for extension bridge-client/automation/background/content — PASS.
+- extension manifest parse and Phase-5 content-script permissions — PASS.
+- git diff --check — PASS (line-ending notices only).
+- npm run dev — PASS: Electron opened the `PDF-AI` window; startup logged `PDF AI MCP: listening on 127.0.0.1:63913` and `PDF-AI browser bridge: http://127.0.0.1:8875`; bridge `/hello` returned the expected PDF-AI identity/protocol; the pre-existing Chat On Steroids tunnel-client remained untouched; Ctrl-C stopped PDF-AI cleanly.

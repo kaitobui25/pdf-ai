@@ -114,6 +114,8 @@ export interface BrowserBridgeOptions {
   ports?: readonly BridgePort[];
   rateLimit?: number;
   now?: () => number;
+  onEvents?: (events: unknown[]) => Promise<unknown>;
+  readDocumentChunk?: (documentId: string, offset: number, limit: number) => Promise<unknown>;
 }
 
 function emptyState(): BridgeDurableState {
@@ -280,6 +282,28 @@ export async function startBrowserBridge(
   let listeningPort: BridgePort | null = null;
   let stopping: Promise<void> | null = null;
   const requestTimes = new Map<string, number[]>();
+  const commandWaiters = new Set<() => void>();
+
+  const notifyCommandWaiters = (): void => {
+    for (const wake of [...commandWaiters]) wake();
+    commandWaiters.clear();
+  };
+
+  const waitForCommand = (generation: number, waitMs: number): Promise<void> => {
+    if (state.commands.length || state.wakeGeneration !== generation || waitMs <= 0) return Promise.resolve();
+    return new Promise(resolve => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        commandWaiters.delete(finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, waitMs);
+      commandWaiters.add(finish);
+    });
+  };
 
   const mutateState = <T>(
     mutation: (current: BridgeDurableState) => { next: BridgeDurableState; result: T }
@@ -335,7 +359,8 @@ export async function startBrowserBridge(
         throw new BridgeHttpError(403, 'loopback_only');
       }
       if (!admitted(req)) throw new BridgeHttpError(429, 'rate_limited');
-      const route = (req.url ?? '').split('?')[0] ?? '';
+      const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const route = requestUrl.pathname;
 
       if (req.method === 'OPTIONS') {
         const origin = originOf(req);
@@ -427,10 +452,51 @@ export async function startBrowserBridge(
       }
 
       if (route === '/commands/next' && req.method === 'GET') {
+        const waitRaw = Number.parseInt(requestUrl.searchParams.get('wait') ?? '0', 10);
+        const waitMs = Number.isFinite(waitRaw) ? Math.max(0, Math.min(25_000, waitRaw)) : 0;
+        if (!state.commands.length && waitMs > 0) {
+          await waitForCommand(state.wakeGeneration, waitMs);
+        }
         json(req, res, 200, {
           command: state.commands[0] ?? null,
           wakeGeneration: state.wakeGeneration
         });
+        return;
+      }
+
+      if (route === '/events' && req.method === 'POST') {
+        if (!options.onEvents) throw new BridgeHttpError(503, 'events_unavailable');
+        const body = await readJsonBody(req) as { events?: unknown };
+        if (!Array.isArray(body.events) || body.events.length < 1 || body.events.length > 64) {
+          throw new BridgeHttpError(400, 'invalid_event_batch');
+        }
+        const receipts = await options.onEvents(body.events);
+        json(req, res, 200, { receipts });
+        return;
+      }
+
+      const documentRoute = /^\/documents\/([^/]+)\/file$/.exec(route);
+      if (documentRoute && req.method === 'GET') {
+        if (!options.readDocumentChunk) throw new BridgeHttpError(503, 'document_bytes_unavailable');
+        let documentId: string;
+        try {
+          documentId = decodeURIComponent(documentRoute[1]!);
+        } catch {
+          throw new BridgeHttpError(400, 'invalid_document_id');
+        }
+        if (!/^[A-Za-z0-9_-]{8,128}$/.test(documentId)) {
+          throw new BridgeHttpError(400, 'invalid_document_id');
+        }
+        const offset = Number.parseInt(requestUrl.searchParams.get('offset') ?? '0', 10);
+        const limit = Number.parseInt(requestUrl.searchParams.get('limit') ?? String(256 * 1024), 10);
+        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 256 * 1024) {
+          throw new BridgeHttpError(400, 'invalid_document_range');
+        }
+        try {
+          json(req, res, 200, await options.readDocumentChunk(documentId, offset, limit));
+        } catch {
+          throw new BridgeHttpError(409, 'document_unavailable');
+        }
         return;
       }
 
@@ -523,17 +589,20 @@ export async function startBrowserBridge(
         payload,
         createdAt: now()
       };
-      return mutateState(current => {
+      const published = await mutateState(current => {
         if (current.commands.length >= MAX_COMMANDS) throw new Error('Bridge command queue is full.');
         const next = structuredClone(current);
         next.commands.push(command);
         next.wakeGeneration++;
         return { next, result: command };
       });
+      notifyCommandWaiters();
+      return published;
     },
     stop: () => {
       if (stopping) return stopping;
       stopping = (async () => {
+        notifyCommandWaiters();
         await mutationQueue;
         if (!server.listening) return;
         await new Promise<void>((resolve, reject) => {

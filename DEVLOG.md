@@ -308,3 +308,28 @@ Validation:
 - Tunnel lifecycle tests cover secret-free argv/status, scrubbed environment, exact current MCP URL, unexpected-exit reconnect, persistent-unready replacement with retirement barrier, stale-child rejection, terminal auth failure and Disconnect cancellation.
 - npm run build: pass.
 - npm run dev: PASS. Electron opened a `PDF-AI` window, logged only `PDF AI MCP: listening on 127.0.0.1:63480` plus `PDF-AI browser bridge: http://127.0.0.1:8875`, and `/hello` reported `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1. No PDF-AI tunnel runtime was downloaded on startup; the already-running Chat On Steroids tunnel-client remained separate and untouched. Ctrl-C stopped the PDF-AI window and bridge cleanly.
+
+## Phase 5 — PDF-AI-owned ChatGPT browser automation
+
+Inspected the CoS browser/session ownership patterns in `extension/background.js`, `extension/content.js`, `extension/chatgpt-dom.js`, `extension/fiber.js`, and the session input/attachment/recorder/store modules. PDF-AI keeps only the smaller subset needed for one PDF reader: exact owned-chat targeting, fail-closed composer control, one PDF attachment, native send receipt, durable observations and restart-safe identities.
+
+Implemented:
+
+- Added durable per-document chat sessions and input IDs. The renderer supplies only `documentId`, prompt text and scope; browser/conversation ownership stays in main/extension state.
+- Added a prompt ownership marker so a delivered input can be recognized idempotently after extension/service-worker recovery.
+- Added protected bridge event ingestion, bounded PDF chunk delivery by `documentId`, and command long-poll wakeup.
+- Added a Chrome MV3 ChatGPT content script plus service-worker automation. Fresh chats are created inactive by PDF-AI; later sends reuse only the exact bound conversation and never an unrelated active tab.
+- Added top-frame `sender.documentId` plus document-load token fencing so a stale content script after reload cannot read PDF bytes or publish observations.
+- Added exact native user-message receipt semantics: a click/composer-clear/Stop transition alone never proves send success.
+- Added bounded durable extension event outbox and main-process event replay/correlation. Assistant replies may carry stable `pdf://<documentId>/page/<n>` references for later local navigation.
+- Added registered-PDF chunk reads that recheck the backing file before/after each chunk and never reveal native paths.
+
+Validation before Phase-5 smoke/commit:
+
+- `npm run typecheck`: pass.
+- `npm test`: pass, 16 files / 69 tests.
+- `npm run build`: pass.
+- extension `node --check`: pass for bridge client, automation, background and content scripts.
+- extension manifest parse/required ChatGPT content-script permissions: pass.
+- `git diff --check`: pass.
+- `npm run dev`: pass. Electron opened the `PDF-AI` window, MCP logged only loopback port `63913`, browser bridge `/hello` identified `pdf-ai` protocol 1 on port 8875, and the unrelated Chat On Steroids tunnel-client process remained untouched. Ctrl-C stopped PDF-AI cleanly.

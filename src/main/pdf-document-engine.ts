@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { open } from 'node:fs/promises';
 import { createCanvas, type Canvas } from '@napi-rs/canvas';
 import {
   getDocument,
@@ -22,6 +23,7 @@ import type {
   PdfSelectionState,
   PdfSelectionUpdate
 } from '../shared/pdf.js';
+import type { PdfDocumentChunk } from '../shared/chat.js';
 import {
   loadPdfSnapshotRecord,
   pdfFileIdentityMatches,
@@ -36,6 +38,7 @@ const MAX_SELECTION_CHARS = 50_000;
 const MIN_RENDER_SCALE = 0.1;
 const MAX_RENDER_SCALE = 4;
 const MAX_RENDER_DIMENSION = 4096;
+const MAX_DOCUMENT_CHUNK_BYTES = 256 * 1024;
 
 export type PdfEngineErrorCode =
   | 'document_not_found'
@@ -441,6 +444,50 @@ export class PdfDocumentEngine {
       scale: full.scale,
       region,
       bytes: new Uint8Array(canvas.toBuffer('image/png'))
+    };
+  }
+
+  async readDocumentChunk(
+    documentId: string,
+    offset: number,
+    limit = MAX_DOCUMENT_CHUNK_BYTES
+  ): Promise<PdfDocumentChunk> {
+    const record = this.recordFor(documentId);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > record.size) {
+      throw new PdfEngineError('invalid_argument', 'Document chunk offset is invalid.');
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_DOCUMENT_CHUNK_BYTES) {
+      throw new PdfEngineError(
+        'invalid_argument',
+        'Document chunk limit must be from 1 to ' + MAX_DOCUMENT_CHUNK_BYTES + ' bytes.'
+      );
+    }
+    await this.assertUnchanged(record);
+    const source = this.activeSource(record);
+    const length = Math.min(limit, Math.max(0, record.size - offset));
+    const buffer = Buffer.alloc(length);
+    const handle = await open(source.filePath, 'r');
+    try {
+      const { bytesRead } = length
+        ? await handle.read(buffer, 0, length, offset)
+        : { bytesRead: 0 };
+      if (bytesRead !== length) {
+        throw new PdfEngineError('document_changed', 'The PDF changed while its upload bytes were being read.');
+      }
+    } finally {
+      await handle.close();
+    }
+    await this.assertUnchanged(record);
+    const nextOffset = offset + length;
+    return {
+      documentId: record.documentId,
+      name: record.name,
+      mimeType: 'application/pdf',
+      size: record.size,
+      offset,
+      nextOffset,
+      done: nextOffset >= record.size,
+      base64: buffer.toString('base64')
     };
   }
 

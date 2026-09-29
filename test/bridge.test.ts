@@ -318,4 +318,70 @@ describe('PDF-AI browser bridge', () => {
     });
     expect(oversized.status).toBe(413);
   });
+
+  it('long-polls for commands and exposes only protected bounded event/document routes', async () => {
+    const eventBatches: unknown[][] = [];
+    const { bridge } = await start(new MemoryBridgeStateStore(), {
+      onEvents: async events => {
+        eventBatches.push(events);
+        return (events as Array<{ eventId?: unknown }>).map(event => ({
+          eventId: String(event.eventId ?? ''),
+          status: 'ok'
+        }));
+      },
+      readDocumentChunk: async (documentId, offset, limit) => ({
+        documentId,
+        name: 'paper.pdf',
+        mimeType: 'application/pdf',
+        size: 4,
+        offset,
+        nextOffset: Math.min(4, offset + limit),
+        done: offset + limit >= 4,
+        base64: 'JVBERg=='
+      })
+    });
+    const token = await pair(bridge);
+
+    const longPoll = fetch(bridge.url + '/commands/next?wait=1000', {
+      headers: bridgeHeaders(token)
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const command = await bridge.enqueueCommand('chat_send', { hello: 'world' });
+    const polled = await longPoll;
+    await expect(polled.json()).resolves.toMatchObject({
+      command: { id: command.id, type: 'chat_send' }
+    });
+
+    const events = await fetch(bridge.url + '/events', {
+      method: 'POST',
+      headers: { ...bridgeHeaders(token), 'content-type': 'application/json' },
+      body: JSON.stringify({ events: [{ eventId: 'event-12345678' }] })
+    });
+    expect(events.status).toBe(200);
+    await expect(events.json()).resolves.toMatchObject({
+      receipts: [{ eventId: 'event-12345678', status: 'ok' }]
+    });
+    expect(eventBatches).toEqual([[{ eventId: 'event-12345678' }]]);
+
+    const documentId = 'pdf-0123456789abcdef0123456789abcdef';
+    const chunk = await fetch(bridge.url + `/documents/${documentId}/file?offset=0&limit=4`, {
+      headers: bridgeHeaders(token)
+    });
+    expect(chunk.status).toBe(200);
+    await expect(chunk.json()).resolves.toMatchObject({
+      documentId,
+      offset: 0,
+      nextOffset: 4,
+      done: true
+    });
+
+    expect((await fetch(bridge.url + '/events', {
+      method: 'POST',
+      headers: { ...bridgeHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ events: [{ eventId: 'event-unauthorized' }] })
+    })).status).toBe(401);
+    expect((await fetch(bridge.url + `/documents/${documentId}/file?offset=0&limit=999999`, {
+      headers: bridgeHeaders(token)
+    })).status).toBe(400);
+  });
 });
