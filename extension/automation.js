@@ -4,6 +4,7 @@ export const PDF_AI_EVENT_OUTBOX_KEY = 'pdfAiEventOutbox';
 const CHAT_URL = 'https://chatgpt.com/';
 const MAX_EVENT_OUTBOX = 100;
 const MAX_EVENT_BYTES = 4 * 1024 * 1024;
+const MAX_ABANDONED_INPUTS = 128;
 const CONTENT_READY_TIMEOUT_MS = 30_000;
 
 function conversationFromUrl(url) {
@@ -192,6 +193,49 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
     return tab;
   }
 
+  async function abandonPending(binding, inputId) {
+    if (binding.pendingInputId !== inputId) return;
+    const abandonedInputIds = Array.isArray(binding.abandonedInputIds)
+      ? binding.abandonedInputIds.filter(id => typeof id === 'string')
+      : [];
+    if (!abandonedInputIds.includes(inputId)) abandonedInputIds.push(inputId);
+    binding.abandonedInputIds = abandonedInputIds.slice(-MAX_ABANDONED_INPUTS);
+    binding.pendingInputId = null;
+    binding.commandId = null;
+    binding.authorizedInputId = null;
+    binding.tabDocumentId = null;
+    binding.documentToken = null;
+    binding.tabId = null;
+    binding.updatedAt = now();
+    await queueEvents([{
+      eventId: crypto.randomUUID(),
+      kind: 'input_abandoned',
+      sessionId: binding.sessionId,
+      documentId: binding.documentId,
+      inputId,
+      conversationId: binding.conversationId ?? null,
+      error: 'The ChatGPT tab was closed while this input was still pending.',
+      time: now()
+    }]);
+    void drainEvents();
+  }
+
+  async function handleTabRemoved(tabId) {
+    await load();
+    for (const binding of Object.values(owned)) {
+      if (binding.tabId !== tabId) continue;
+      if (binding.pendingInputId) {
+        await abandonPending(binding, binding.pendingInputId);
+      } else {
+        binding.tabId = null;
+        binding.tabDocumentId = null;
+        binding.documentToken = null;
+        binding.updatedAt = now();
+        await persist();
+      }
+    }
+  }
+
   async function waitForRegisteredDocument(binding, tabId, timeoutMs = CONTENT_READY_TIMEOUT_MS) {
     const deadline = now() + timeoutMs;
     while (now() < deadline) {
@@ -220,6 +264,15 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
   async function failCommand(payload, reason) {
     const binding = owned[payload.sessionId];
     const authorized = binding?.authorizedInputId === payload.inputId;
+    // A proven pre-Send failure is terminal for this input. Release only the
+    // exact pending claim, while keeping the tab/conversation binding reusable.
+    // Once Send was authorized, retain custody and report uncertainty instead.
+    if (!authorized && binding?.pendingInputId === payload.inputId) {
+      binding.pendingInputId = null;
+      binding.commandId = null;
+      binding.authorizedInputId = null;
+      binding.updatedAt = now();
+    }
     const event = authorized
       ? {
           eventId: crypto.randomUUID(),
@@ -248,8 +301,22 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
     if (binding?.conversationId && payload.conversationId && binding.conversationId !== payload.conversationId) {
       return failCommand(payload, 'conversation_ownership_mismatch');
     }
+    if (Array.isArray(binding?.abandonedInputIds) && binding.abandonedInputIds.includes(payload.inputId)) {
+      return { status: 'failed', error: 'input_abandoned' };
+    }
     if (binding?.pendingInputId && binding.pendingInputId !== payload.inputId) {
-      return failCommand(payload, 'owned_chat_busy');
+      // The app will not issue a second input while its durable session still has
+      // a pending one. Therefore a newer command is authoritative proof that an
+      // old un-authorized browser claim is stale (including claims persisted by
+      // older extension versions after a pre-Send failure). An authorized claim
+      // remains ambiguous and must keep blocking automatic replacement.
+      if (binding.authorizedInputId === binding.pendingInputId) {
+        return failCommand(payload, 'owned_chat_busy');
+      }
+      binding.pendingInputId = null;
+      binding.commandId = null;
+      binding.authorizedInputId = null;
+      binding.updatedAt = now();
     }
     if (!binding) {
       binding = {
@@ -430,17 +497,33 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
     await load();
     const pending = Object.values(owned).filter(binding => binding.pendingInputId && binding.conversationId);
     for (const binding of pending) {
+      const inputId = binding.pendingInputId;
       try {
-        const tab = await ensureTab(binding);
+        let tab = await tabById(binding.tabId);
+        if (!tab || conversationFromUrl(tab.url) !== binding.conversationId) {
+          tab = await matchingConversationTab(binding.conversationId);
+        }
+        if (binding.pendingInputId !== inputId) continue;
+        if (!tab) {
+          await abandonPending(binding, inputId);
+          continue;
+        }
+        if (binding.tabId !== tab.id) {
+          binding.tabId = tab.id;
+          binding.tabDocumentId = null;
+          binding.documentToken = null;
+          binding.updatedAt = now();
+          await persist();
+        }
         await sendToContent(tab.id, {
           type: 'pdf-ai:resume',
           sessionId: binding.sessionId,
           documentId: binding.documentId,
-          inputId: binding.pendingInputId,
+          inputId,
           conversationId: binding.conversationId
         }, 10_000);
       } catch {
-        // The durable binding remains authoritative; later page-ready/maintenance retries it.
+        // Existing tabs may become ready later; maintenance can resume them without creating a replacement.
       }
     }
     void drainEvents();
@@ -486,9 +569,12 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
     };
   }
 
+  chromeApi.tabs.onRemoved?.addListener(tabId => handleTabRemoved(tabId));
+
   return {
     cancelCommand,
     drainEvents,
+    handleTabRemoved,
     handleRuntimeMessage,
     processCommand,
     restoreOwnedChats,

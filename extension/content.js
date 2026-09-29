@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = 1;
+  const VERSION = 2;
   const incumbent = globalThis.__PDF_AI_CONTENT__;
   if (incumbent?.version >= VERSION && incumbent.alive?.()) return;
   incumbent?.stop?.();
@@ -32,9 +32,13 @@
   }
 
   function turnId(node) {
-    const turn = node?.closest?.('[data-turn-id], [data-turn-key], [data-chatgpt-search-unit-key]');
-    return turn?.getAttribute?.('data-turn-id') || turn?.getAttribute?.('data-turn-key') ||
-      turn?.getAttribute?.('data-chatgpt-search-unit-key') || null;
+    const turn = node?.closest?.('[data-turn-id], [data-turn-key]');
+    const stable = turn?.getAttribute?.('data-turn-id') || turn?.getAttribute?.('data-turn-key');
+    if (stable) return stable;
+    const unit = node?.closest?.('[data-content-search-unit-key], [data-chatgpt-search-unit-key]');
+    const key = unit?.getAttribute?.('data-content-search-unit-key') ||
+      unit?.getAttribute?.('data-chatgpt-search-unit-key') || '';
+    return key ? key.replace(/:\d+:(?:user|assistant)$/i, '') : null;
   }
 
   function requestId(node) {
@@ -54,8 +58,12 @@
   function cleanText(node, role) {
     if (!node) return '';
     if (role === 'user') {
-      const parts = [...node.querySelectorAll?.('.whitespace-pre-wrap, [data-user-message-bubble]') || []]
+      const whitespace = [...node.querySelectorAll?.('.whitespace-pre-wrap') || []]
         .filter(part => !part.parentElement?.closest?.('.whitespace-pre-wrap'))
+        .map(part => (part.textContent || '').trim()).filter(Boolean);
+      if (whitespace.length) return whitespace.join('\n');
+      const parts = [...node.querySelectorAll?.('[data-user-message-bubble]') || []]
+        .filter(part => !part.parentElement?.closest?.('[data-user-message-bubble]'))
         .map(part => (part.textContent || '').trim()).filter(Boolean);
       if (parts.length) return parts.join('\n');
     }
@@ -97,16 +105,54 @@
       const id = messageId(node, index);
       const key = `${role}:${id}`;
       if (seen.has(key)) continue;
+      const text = cleanText(node, role);
+      if (role === 'assistant' && !text) continue;
       seen.add(key);
       result.push({
         id,
         role,
-        text: cleanText(node, role),
+        text,
         turnId: turnId(node),
         requestId: requestId(node),
         node
       });
     }
+
+    // Current ChatGPT can render the final assistant prose as plain markdown inside
+    // a conversation turn without any assistant message/search-unit attribute. The
+    // explicit user row still exists, so sending succeeds, but an explicit-only scan
+    // never observes the answer and PDF-AI waits forever. This follows the same
+    // fallback used by CoS: only conversation-turn roots are eligible, user/progress
+    // markdown is excluded, and the last authored markdown block is the answer.
+    const fallbackTurns = [...document.querySelectorAll(
+      'section[data-testid^="conversation-turn"][data-turn="assistant"], ' +
+      '[data-thread-find-target="conversation"] [data-turn-key]'
+    )];
+    for (let index = 0; index < fallbackTurns.length; index++) {
+      const root = fallbackTurns[index];
+      if (result.some(message => message.role === 'assistant' && message.text && root.contains(message.node))) continue;
+      const parts = [...root.querySelectorAll('.markdown, [data-markdown-text-style="assistant-message"]')]
+        .filter(part => !part.closest(
+          '[data-message-author-role="user"], [data-content-search-unit-key$=":user"], ' +
+          '[data-chatgpt-search-unit-key$=":user"], [data-user-message-bubble], [data-interrupted]'
+        ))
+        .filter(part => (part.textContent || '').trim());
+      const node = parts.at(-1);
+      if (!node) continue;
+      const text = cleanText(node, 'assistant');
+      if (!text) continue;
+      const id = `assistant:${turnId(root) || index}`;
+      if (result.some(message => message.role === 'assistant' && message.id === id)) continue;
+      result.push({ id, role: 'assistant', text, turnId: turnId(root), requestId: requestId(root), node });
+    }
+
+    result.sort((a, b) => {
+      if (a.node === b.node || !a.node?.compareDocumentPosition) return 0;
+      const position = a.node.compareDocumentPosition(b.node);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
     return result;
   }
 
@@ -391,11 +437,13 @@
       conversationId: conversationId()
     });
     if (authorized?.ok !== true) return { ok: false, error: authorized?.error || 'send_authorization_failed' };
-    if (composer() !== box || !box.isConnected || stopButton() || sendButton() !== button || !sendEnabled(button) ||
-        compactText(composerText(box)) !== compactText(command.prompt)) {
+    const currentBox = composer();
+    const currentButton = sendButton();
+    if (!currentBox || !currentBox.isConnected || stopButton() || !sendEnabled(currentButton) ||
+        compactText(composerText(currentBox)) !== compactText(command.prompt)) {
       return { ok: false, error: 'send_state_changed_after_authorization' };
     }
-    try { button.click(); } catch { return { ok: false, error: 'send_click_failed' }; }
+    try { currentButton.click(); } catch { return { ok: false, error: 'send_click_failed' }; }
 
     const sent = await waitFor(() => exactUserFor(command), 30_000, 100);
     if (!sent) return { ok: false, error: 'sent_user_message_not_observed' };
@@ -420,6 +468,39 @@
     if (userIndex < 0) return null;
     const after = all.slice(userIndex + 1).filter(message => message.role === 'assistant' && message.text);
     return after.length ? after[after.length - 1] : null;
+  }
+
+  function responseComplete(message) {
+    if (!message?.node) return false;
+    const root = message.node.closest?.(
+      '[data-turn-key], section[data-testid^="conversation-turn"], [data-chatgpt-search-unit-key]'
+    ) || message.node;
+    const isCompletionButton = button => {
+      const label = `${button.getAttribute?.('aria-label') || ''} ${button.getAttribute?.('data-testid') || ''} ${button.textContent || ''}`;
+      return /regenerate\s+response|rate\s+response|response[-_ ]feedback/i.test(label);
+    };
+    if ([...root.querySelectorAll?.('button') || []].some(isCompletionButton)) return true;
+    if ([...root.querySelectorAll?.('[role="status"], [aria-live]') || []]
+      .some(node => /response\s+complete/i.test(node.textContent || ''))) return true;
+
+    // The current app shell can mount response actions just outside the data-turn-key
+    // that owns the prose. Scope the fallback by chronology instead: this extension's
+    // current user message is the newest question, so only completion controls rendered
+    // after that exact user row can close its response. Older response footers sit before it.
+    const user = active ? messages().find(row => row.role === 'user' && row.id === active.userMessageId) : null;
+    const afterUser = node => {
+      if (!user?.node?.compareDocumentPosition || !node) return false;
+      return Boolean(user.node.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+    if ([...document.querySelectorAll('button')].some(button => afterUser(button) && isCompletionButton(button))) return true;
+    if ([...document.querySelectorAll('[role="status"], [aria-live]')]
+      .some(node => afterUser(node) && /response\s+complete/i.test(node.textContent || ''))) return true;
+    return [...document.querySelectorAll('[aria-label], span, div, p')].some(node => {
+      if (!afterUser(node)) return false;
+      const label = node.getAttribute?.('aria-label') || '';
+      const leafText = node.childElementCount === 0 ? (node.textContent || '').trim() : '';
+      return /response\s+complete/i.test(`${label} ${leafText}`);
+    });
   }
 
   async function emitAssistant(message, final) {
@@ -458,12 +539,14 @@
       void emitAssistant(assistant, false);
     }
     clearTimeout(finalTimer);
-    if (!stopButton()) {
+    if (!stopButton() && responseComplete(assistant)) {
       const wait = Math.max(0, 1500 - (Date.now() - active.lastChangedAt));
       finalTimer = setTimeout(() => {
         if (!active || stopButton() || conversationId() !== active.conversationId) return;
         const current = assistantAfterActive();
-        if (!current || current.id !== active.lastAssistantId || current.text !== active.lastText) return scheduleScan(0);
+        if (!current || !responseComplete(current) || current.id !== active.lastAssistantId || current.text !== active.lastText) {
+          return scheduleScan(0);
+        }
         void emitAssistant(current, true);
       }, wait);
     }
@@ -568,6 +651,7 @@
       ownershipMarkers,
       composer,
       sendButton,
+      responseComplete,
       composerFileName,
       hasComposerAttachments,
       fileUploadInput

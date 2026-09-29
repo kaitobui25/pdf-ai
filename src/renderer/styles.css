@@ -380,6 +380,18 @@ button.primary {
   margin-top: 3px;
 }
 
+.connection-settings-toggle {
+  flex: none;
+  min-height: 28px;
+  padding: 0 9px;
+  color: #cfcfcf;
+  font-size: 11px;
+}
+
+.tunnel-settings[hidden] {
+  display: none;
+}
+
 .connection-state {
   flex: none;
   padding: 4px 8px;

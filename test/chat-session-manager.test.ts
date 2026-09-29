@@ -164,6 +164,77 @@ describe('PDF-AI chat session manager', () => {
       .toContain('The evidence is on');
   });
 
+  it('treats ChatGPT shell user and assistant unit ids as the same turn', async () => {
+    const directory = await tempDir();
+    const filePath = path.join(directory, 'shell-turn.pdf');
+    await writeFile(filePath, await samplePdf('Shell turn evidence'));
+    const documents = engine();
+    const opened = await documents.openFile(filePath);
+    const commands: BridgeCommand[] = [];
+    const manager = new ChatSessionManager(documents, new MemoryChatStateStore(), fakeBridge(commands));
+
+    const started = await manager.send({
+      documentId: opened.documentId,
+      text: 'Read the document',
+      scope: 'document',
+      attachDocument: false
+    });
+    const conversationId = '87654321-abcd-4abc-8abc-1234567890ab';
+    const sent = await manager.acceptBridgeEvents([{
+      eventId: 'shell-user-sent',
+      kind: 'input_sent',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId,
+      messageId: 'user-shell',
+      turnId: 'fallback-turn-0:0:user',
+      time: Date.now()
+    }]);
+    expect(sent[0]).toMatchObject({ status: 'ok' });
+
+    const interim = await manager.acceptBridgeEvents([{
+      eventId: 'shell-assistant-interim',
+      kind: 'assistant_message',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId,
+      messageId: 'assistant-shell-fallback',
+      turnId: 'fallback-turn-0:1:assistant',
+      text: 'Reading the document…',
+      final: false,
+      time: Date.now()
+    }]);
+    expect(interim[0]).toMatchObject({ status: 'ok' });
+
+    const final = await manager.acceptBridgeEvents([{
+      eventId: 'shell-assistant-final',
+      kind: 'assistant_message',
+      sessionId: started.sessionId,
+      documentId: opened.documentId,
+      inputId: started.pendingInputId,
+      conversationId,
+      messageId: 'assistant-shell',
+      turnId: 'fallback-turn-0:2:assistant',
+      text: 'Same shell exchange.',
+      final: true,
+      time: Date.now()
+    }]);
+    expect(final[0]).toMatchObject({ status: 'ok' });
+    const completed = await manager.getSession(opened.documentId);
+    expect(completed).toMatchObject({
+      state: 'complete',
+      pendingInputId: null
+    });
+    expect(completed?.messages.filter(message => message.role === 'assistant')).toHaveLength(1);
+    expect(completed?.messages.at(-1)).toMatchObject({
+      messageId: 'assistant-shell',
+      text: 'Same shell exchange.',
+      final: true
+    });
+  });
+
   it('keeps two PDFs in separate sessions and preserves a pending input across manager restart', async () => {
     const directory = await tempDir();
     const firstPath = path.join(directory, 'first.pdf');
@@ -288,6 +359,15 @@ describe('PDF-AI chat session manager', () => {
     }]);
     expect(await manager.getSession(first.documentId)).toMatchObject({
       state: 'uncertain', pendingState: 'uncertain', pendingInputId: firstInput
+    });
+    await manager.acceptBridgeEvents([{
+      eventId: 'tab-closed-after-auth', kind: 'input_abandoned', sessionId: authorized.sessionId,
+      documentId: first.documentId, inputId: firstInput, conversationId: null,
+      error: 'The ChatGPT tab was closed while this input was still pending.', time: Date.now()
+    }]);
+    expect(await manager.getSession(first.documentId)).toMatchObject({
+      state: 'error', pendingState: null, pendingInputId: null,
+      error: 'The ChatGPT tab was closed while this input was still pending.'
     });
 
     const cancellable = await manager.send({ documentId: second.documentId, text: 'Cancel me', scope: 'document' });

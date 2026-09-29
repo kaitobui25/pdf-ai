@@ -8,9 +8,10 @@ import { describe, expect, it } from 'vitest';
 interface ContentHooks {
   conversationId(): string | null;
   ownershipMarkers(): Array<{ sessionId: string; inputId: string }>;
-  messages(): Array<{ role: string; id: string; text: string }>;
+  messages(): Array<{ role: string; id: string; text: string; turnId?: string | null; node?: Element | null }>;
   composer(): unknown;
   sendButton(): unknown;
+  responseComplete(message: { node?: Element | null }): boolean;
   composerFileName(button: Element): string | undefined;
   hasComposerAttachments(): boolean;
   fileUploadInput(): HTMLInputElement | null;
@@ -80,6 +81,64 @@ describe('PDF-AI ChatGPT content script', () => {
       form.append(tile);
       expect(api.composerFileName(remove)).toBe('11428195_EN.pdf');
       expect(api.hasComposerAttachments()).toBe(true);
+    } finally {
+      window.__PDF_AI_CONTENT__?.stop?.();
+      dom.window.close();
+    }
+  });
+
+  it('reads assistant markdown from the current shell even when it has no assistant message attribute', async () => {
+    const conversationId = '87654321-abcd-4abc-8abc-1234567890ab';
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const inputId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const dom = new JSDOM(`<!doctype html><html><body>
+      <main data-app-shell-main-surface>
+        <div data-thread-find-target="conversation">
+          <div data-turn-key="turn-live">
+            <div data-content-search-unit-key="fallback-turn-0:0:user">
+              <div data-user-message-bubble><div class="whitespace-pre-wrap">[[PDF-AI:${sessionId}:${inputId}]]\nQuestion</div></div>
+            </div>
+            <div data-chatgpt-search-unit-key="fallback-turn-0:1:assistant"></div>
+            <div><div class="markdown">Final answer from the current ChatGPT shell.</div></div>
+          </div>
+        </div>
+      </main>
+      <form data-chatgpt-composer>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <button type="button" data-testid="send-button">Send</button>
+      </form>
+    </body></html>`, {
+      url: `https://chatgpt.com/c/${conversationId}`,
+      runScripts: 'dangerously'
+    });
+    const window = dom.window as unknown as Record<string, any>;
+    Object.defineProperty(window, 'crypto', { value: webcrypto, configurable: true });
+    let hooks: ContentHooks | null = null;
+    window.__PDF_AI_CONTENT_TEST_HOOK__ = (value: ContentHooks) => { hooks = value; };
+    window.chrome = {
+      runtime: {
+        onMessage: { addListener: () => undefined },
+        sendMessage: async () => ({ ok: false })
+      }
+    };
+    const source = await readFile(path.join(process.cwd(), 'extension', 'content.js'), 'utf8');
+    window.eval(source);
+    try {
+      const api = hooks as unknown as ContentHooks;
+      expect(api.ownershipMarkers()).toEqual([{ sessionId, inputId }]);
+      expect(api.messages().map(message => ({ role: message.role, text: message.text }))).toEqual([
+        { role: 'user', text: `[[PDF-AI:${sessionId}:${inputId}]]\nQuestion` },
+        { role: 'assistant', text: 'Final answer from the current ChatGPT shell.' }
+      ]);
+      expect(api.messages().map(message => message.turnId)).toEqual(['turn-live', 'turn-live']);
+      const assistant = api.messages().find(message => message.role === 'assistant')!;
+      expect(api.responseComplete(assistant)).toBe(false);
+      const actions = dom.window.document.createElement('div');
+      const regenerate = dom.window.document.createElement('button');
+      regenerate.setAttribute('aria-label', 'Regenerate response');
+      actions.append(regenerate);
+      dom.window.document.querySelector('[data-turn-key="turn-live"]')!.append(actions);
+      expect(api.responseComplete(assistant)).toBe(true);
     } finally {
       window.__PDF_AI_CONTENT__?.stop?.();
       dom.window.close();

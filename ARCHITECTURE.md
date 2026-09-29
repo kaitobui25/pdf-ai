@@ -58,6 +58,8 @@ Immediately before the one native Send click, the content document requests auth
 
 Assistant finality is monotonic. A stale streaming revision cannot overwrite a final answer, a completed input cannot acquire a second assistant message identity, and conflicting conversation/turn/request evidence is rejected. Event IDs provide bounded transport replay suppression, while these semantic identities remain the long-term idempotency boundary after the event-ID window rolls over.
 
+Closing an owned ChatGPT tab abandons its pending input durably. Inputs not yet authorized are cancelled; authorized or sent inputs remain marked uncertain, but are released from the session's pending slot. Maintenance resumes only an already-open matching tab and never recreates a missing tab for a pending input; abandoned input IDs also block at-least-once command replay.
+
 ## Local chat UI boundary
 
 Phase 7 renders only the durable main-process chat snapshot. The renderer never chooses ChatGPT tabs or conversations. Its actions are limited to the current `documentId`, prompt text, an explicit scope (`selection`, `page`, `document`, or `custom`), and an optional attach-current-PDF flag. Session/conversation/input ownership remains outside the renderer.

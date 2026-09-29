@@ -203,7 +203,8 @@ const bridgeEventSchema = z.object({
     'assistant_message',
     'send_uncertain',
     'input_cancelled',
-    'input_failed'
+    'input_failed',
+    'input_abandoned'
   ]),
   sessionId: z.uuid(),
   documentId: z.string().min(8).max(128),
@@ -247,6 +248,11 @@ function pageRef(documentId: string, page: number): ChatPageReference {
 
 function messageId(prefix: string, inputId: string): string {
   return `${prefix}:${inputId}`;
+}
+
+function correlationTurnId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.replace(/:\d+:(?:user|assistant)$/i, '');
 }
 
 export class ChatSessionManager {
@@ -522,13 +528,17 @@ export class ChatSessionManager {
         if (session.pendingInputId !== input.id && input.state !== 'complete') throw new Error('assistant_for_non_pending_input');
         if (!event.messageId || !event.text?.trim()) throw new Error('assistant_event_missing_message');
         this.assertCorrelation(input, event);
-        const existing = session.messages.find(message =>
+        const exact = session.messages.find(message =>
           message.role === 'assistant' && message.inputId === input.id && message.messageId === event.messageId
+        );
+        const existing = exact ?? [...session.messages].reverse().find(message =>
+          message.role === 'assistant' && message.inputId === input.id && !message.final
         );
         const refs = parsePdfPageReferences(event.text);
         if (existing) {
           if (!existing.final) {
             existing.text = event.text;
+            existing.messageId = event.messageId;
             existing.turnId = event.turnId ?? existing.turnId;
             existing.requestId = event.requestId ?? existing.requestId;
             existing.final = event.final === true;
@@ -594,6 +604,17 @@ export class ChatSessionManager {
           session.state = 'error';
           session.error = input.error;
         }
+      } else if (event.kind === 'input_abandoned') {
+        if (input.state !== 'complete' && input.state !== 'cancelled' && input.state !== 'failed') {
+          const uncertain = input.state === 'authorized' || input.state === 'sent' || input.state === 'uncertain';
+          input.state = uncertain ? 'uncertain' : 'cancelled';
+          input.error = uncertain
+            ? event.error ?? 'The ChatGPT tab was closed while the response was pending.'
+            : null;
+          if (session.pendingInputId === input.id) session.pendingInputId = null;
+          session.state = uncertain ? 'error' : 'idle';
+          session.error = input.error;
+        }
       }
 
       input.updatedAt = Date.now();
@@ -621,7 +642,9 @@ export class ChatSessionManager {
   }
 
   private assertCorrelation(input: ChatInputRecord, event: BridgeEvent): void {
-    if (input.turnId && event.turnId && input.turnId !== event.turnId) throw new Error('turn_correlation_mismatch');
+    if (input.turnId && event.turnId && correlationTurnId(input.turnId) !== correlationTurnId(event.turnId)) {
+      throw new Error('turn_correlation_mismatch');
+    }
     if (input.requestId && event.requestId && input.requestId !== event.requestId) throw new Error('request_correlation_mismatch');
   }
 

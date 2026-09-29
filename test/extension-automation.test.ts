@@ -34,6 +34,106 @@ describe('PDF-AI ChatGPT ownership automation', () => {
     expect(conversationFromUrl('https://example.com/c/12345678-abcd')).toBeNull();
   });
 
+  it('abandons a pending input instead of reopening a user-closed chat tab', async () => {
+    const storage = new MemoryStorage();
+    const sessionId = randomUUID();
+    const inputId = randomUUID();
+    const documentId = 'pdf-0123456789abcdef0123456789abcdef';
+    const conversationId = '12345678-abcd-4abc-8abc-1234567890ab';
+    storage.values[PDF_AI_OWNED_CHATS_KEY] = {
+      [sessionId]: {
+        sessionId, documentId, conversationId, tabId: 7,
+        pendingInputId: inputId, authorizedInputId: inputId,
+        commandId: '0123456789abcdef01234567', updatedAt: Date.now()
+      }
+    };
+    const createdUrls: string[] = [];
+    const posted: Array<Array<Record<string, unknown>>> = [];
+    const chromeApi = {
+      runtime: {},
+      tabs: {
+        get: async () => { throw new Error('No tab with id: 7'); },
+        query: async () => [],
+        create: async ({ url }: { url: string }) => {
+          createdUrls.push(url);
+          return { id: 8, url };
+        },
+        sendMessage: async () => ({ ok: true })
+      }
+    };
+    const bridgeClient = {
+      postEvents: async (events: Array<Record<string, unknown>>) => {
+        posted.push(events);
+        return { ok: true, data: { receipts: events.map(row => ({ eventId: row.eventId, status: 'ok' })) } };
+      },
+      getDocumentChunk: async () => ({ ok: false, error: 'unused' })
+    };
+    const automation = createChatAutomation({ chromeApi, bridgeClient, localStorage: storage });
+
+    await automation.restoreOwnedChats();
+    await automation.drainEvents();
+
+    expect(createdUrls).toEqual([]);
+    expect(storage.values[PDF_AI_OWNED_CHATS_KEY]).toMatchObject({
+      [sessionId]: { pendingInputId: null, commandId: null, authorizedInputId: null }
+    });
+    expect(posted.flat()).toMatchObject([{
+      kind: 'input_abandoned', sessionId, documentId, inputId, conversationId
+    }]);
+
+    const replay = await automation.processCommand({
+      id: '0123456789abcdef01234567',
+      type: 'chat_send',
+      payload: {
+        sessionId, documentId, inputId, conversationId, prompt: 'must not send again', attachDocument: false,
+        document: { documentId, name: 'paper.pdf', size: 10 }
+      }
+    });
+    expect(replay).toEqual({ status: 'failed', error: 'input_abandoned' });
+    expect(createdUrls).toEqual([]);
+  });
+
+  it('releases pending ownership immediately when Chrome reports the owned tab closed', async () => {
+    const storage = new MemoryStorage();
+    const sessionId = randomUUID();
+    const inputId = randomUUID();
+    const documentId = 'pdf-0123456789abcdef0123456789abcdef';
+    const conversationId = '12345678-abcd-4abc-8abc-1234567890ab';
+    storage.values[PDF_AI_OWNED_CHATS_KEY] = {
+      [sessionId]: {
+        sessionId, documentId, conversationId, tabId: 7,
+        pendingInputId: inputId, authorizedInputId: inputId,
+        commandId: '0123456789abcdef01234567', updatedAt: Date.now()
+      }
+    };
+    let onRemoved: ((tabId: number) => Promise<void>) | undefined;
+    const posted: Array<Array<Record<string, unknown>>> = [];
+    const automation = createChatAutomation({
+      chromeApi: {
+        runtime: {},
+        tabs: { onRemoved: { addListener: (listener: (tabId: number) => Promise<void>) => { onRemoved = listener; } } }
+      },
+      bridgeClient: {
+        postEvents: async (events: Array<Record<string, unknown>>) => {
+          posted.push(events);
+          return { ok: true, data: { receipts: events.map(row => ({ eventId: row.eventId, status: 'ok' })) } };
+        },
+        getDocumentChunk: async () => ({ ok: false, error: 'unused' })
+      },
+      localStorage: storage
+    });
+
+    await onRemoved?.(7);
+    await automation.drainEvents();
+
+    expect(storage.values[PDF_AI_OWNED_CHATS_KEY]).toMatchObject({
+      [sessionId]: { tabId: null, pendingInputId: null, commandId: null, authorizedInputId: null }
+    });
+    expect(posted.flat()).toMatchObject([{
+      kind: 'input_abandoned', sessionId, documentId, inputId, conversationId
+    }]);
+  });
+
   it('ignores an unrelated active tab, creates an owned chat, and reuses only its exact conversation', async () => {
     const storage = new MemoryStorage();
     const tabs: Array<{ id: number; url: string; active?: boolean }> = [
@@ -277,5 +377,145 @@ describe('PDF-AI ChatGPT ownership automation', () => {
     expect(replay).toMatchObject({ status: 'ok', error: 'send_already_authorized' });
     expect(sent).not.toContain('pdf-ai:send');
     expect(sent).toContain('pdf-ai:resume');
+  });
+
+  it('releases a pre-Send failed input so the next message is not blocked as owned_chat_busy', async () => {
+    const storage = new MemoryStorage();
+    const sessionId = randomUUID();
+    const documentId = 'pdf-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const conversationId = '66666666-abcd-4abc-8abc-1234567890ab';
+    const tabs = [{ id: 12, url: 'https://chatgpt.com/' }];
+    let attempts = 0;
+    const bridgeClient = {
+      postEvents: async (events: Array<Record<string, unknown>>) => ({
+        ok: true,
+        data: { receipts: events.map(row => ({ eventId: row.eventId, status: 'ok' })) }
+      }),
+      getDocumentChunk: async () => ({ ok: false, error: 'unused' })
+    };
+    const chromeApi = {
+      runtime: {},
+      tabs: {
+        get: async (id: number) => {
+          const tab = tabs.find(candidate => candidate.id === id);
+          if (!tab) throw new Error('missing tab');
+          return tab;
+        },
+        query: async () => tabs,
+        create: async () => tabs[0],
+        sendMessage: async (_id: number, message: { command?: Record<string, unknown> }) => {
+          attempts++;
+          const payload = message.command!;
+          if (attempts === 1) return { ok: false, error: 'pdf_upload_failed' };
+          tabs[0]!.url = `https://chatgpt.com/c/${conversationId}`;
+          return {
+            ok: true,
+            conversationId,
+            events: [
+              event('chat_owned', payload, { conversationId }),
+              event('input_sent', payload, { conversationId, messageId: `user-${payload.inputId}` }),
+              event('assistant_message', payload, {
+                conversationId,
+                messageId: `assistant-${payload.inputId}`,
+                text: 'done',
+                final: true
+              })
+            ]
+          };
+        }
+      }
+    };
+    const automation = createChatAutomation({ chromeApi, bridgeClient, localStorage: storage });
+    const firstInput = randomUUID();
+    const first = await automation.processCommand({
+      id: 'aaaaaaaaaaaaaaaaaaaaaaaa', type: 'chat_send',
+      payload: {
+        sessionId, documentId, inputId: firstInput, conversationId: null, prompt: 'first', attachDocument: false,
+        document: { documentId, name: 'paper.pdf', size: 10 }
+      }
+    });
+    expect(first).toEqual({ status: 'failed', error: 'pdf_upload_failed' });
+    await automation.drainEvents();
+    expect(storage.values[PDF_AI_OWNED_CHATS_KEY]).toMatchObject({
+      [sessionId]: { pendingInputId: null, commandId: null, authorizedInputId: null }
+    });
+
+    const secondInput = randomUUID();
+    const second = await automation.processCommand({
+      id: 'bbbbbbbbbbbbbbbbbbbbbbbb', type: 'chat_send',
+      payload: {
+        sessionId, documentId, inputId: secondInput, conversationId: null, prompt: 'second', attachDocument: false,
+        document: { documentId, name: 'paper.pdf', size: 10 }
+      }
+    });
+    expect(second).toEqual({ status: 'ok' });
+    expect(attempts).toBe(2);
+    await automation.drainEvents();
+  });
+
+  it('replaces a stale un-authorized claim left by an older extension state', async () => {
+    const storage = new MemoryStorage();
+    const sessionId = randomUUID();
+    const staleInputId = randomUUID();
+    const nextInputId = randomUUID();
+    const documentId = 'pdf-cccccccccccccccccccccccccccccccc';
+    const conversationId = '77777777-abcd-4abc-8abc-1234567890ab';
+    storage.values[PDF_AI_OWNED_CHATS_KEY] = {
+      [sessionId]: {
+        sessionId,
+        documentId,
+        conversationId: null,
+        tabId: 14,
+        pendingInputId: staleInputId,
+        authorizedInputId: null,
+        commandId: 'cccccccccccccccccccccccc',
+        updatedAt: Date.now()
+      }
+    };
+    const bridgeClient = {
+      postEvents: async (events: Array<Record<string, unknown>>) => ({
+        ok: true,
+        data: { receipts: events.map(row => ({ eventId: row.eventId, status: 'ok' })) }
+      }),
+      getDocumentChunk: async () => ({ ok: false, error: 'unused' })
+    };
+    const chromeApi = {
+      runtime: {},
+      tabs: {
+        get: async () => ({ id: 14, url: 'https://chatgpt.com/' }),
+        query: async () => [],
+        create: async () => { throw new Error('not used'); },
+        sendMessage: async (_id: number, message: { command?: Record<string, unknown> }) => {
+          const payload = message.command!;
+          return {
+            ok: true,
+            conversationId,
+            events: [
+              event('chat_owned', payload, { conversationId }),
+              event('input_sent', payload, { conversationId, messageId: `user-${payload.inputId}` }),
+              event('assistant_message', payload, {
+                conversationId,
+                messageId: `assistant-${payload.inputId}`,
+                text: 'done',
+                final: true
+              })
+            ]
+          };
+        }
+      }
+    };
+    const automation = createChatAutomation({ chromeApi, bridgeClient, localStorage: storage });
+    const result = await automation.processCommand({
+      id: 'dddddddddddddddddddddddd', type: 'chat_send',
+      payload: {
+        sessionId, documentId, inputId: nextInputId, conversationId: null, prompt: 'next', attachDocument: false,
+        document: { documentId, name: 'paper.pdf', size: 10 }
+      }
+    });
+    expect(result).toEqual({ status: 'ok' });
+    await automation.drainEvents();
+    expect(storage.values[PDF_AI_OWNED_CHATS_KEY]).toMatchObject({
+      [sessionId]: { conversationId, pendingInputId: null, authorizedInputId: null }
+    });
   });
 });

@@ -1,7 +1,7 @@
 import './styles.css';
 import type { TunnelConnectionStatus } from '../shared/tunnel.js';
 import type { BrowserBridgeStatus } from '../shared/api.js';
-import type { ChatScope, ChatSessionSnapshot } from '../shared/chat.js';
+import type { ChatSessionSnapshot } from '../shared/chat.js';
 import { PdfReader } from './pdf-reader.js';
 import { canNavigateChatReference, chatStatusView, shouldApplyChatResult } from './chat-ui.js';
 import { tunnelViewState } from './tunnel-ui.js';
@@ -54,14 +54,17 @@ root.innerHTML =
         '<section class="connection-card" aria-labelledby="connection-title">' +
           '<div class="connection-heading">' +
             '<div><strong id="connection-title">PDF AI connection</strong><p>OpenAI Secure MCP Tunnel</p></div>' +
-            '<span id="tunnel-state" class="connection-state" data-state="disconnected">Not connected</span>' +
+            '<button id="tunnel-settings-toggle" class="connection-settings-toggle" type="button" aria-expanded="false" aria-controls="tunnel-settings">Show settings</button>' +
           '</div>' +
-          '<label class="connection-field"><span>Tunnel ID</span><input id="tunnel-id" type="text" autocomplete="off" spellcheck="false" placeholder="tunnel_…"></label>' +
-          '<label class="connection-field"><span>Restricted API key</span><input id="tunnel-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter key"></label>' +
-          '<p id="credential-hint" class="connection-hint">The key never leaves the Electron main process except as tunnel-client environment data.</p>' +
-          '<div class="connection-actions">' +
-            '<button id="tunnel-connect" type="button" class="primary">Connect</button>' +
-            '<button id="tunnel-disconnect" type="button" hidden>Disconnect</button>' +
+          '<span id="tunnel-state" class="connection-state" data-state="disconnected">Not connected</span>' +
+          '<div id="tunnel-settings" class="tunnel-settings" hidden>' +
+            '<label class="connection-field"><span>Tunnel ID</span><input id="tunnel-id" type="text" autocomplete="off" spellcheck="false" placeholder="tunnel_…"></label>' +
+            '<label class="connection-field"><span>Restricted API key</span><input id="tunnel-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter key"></label>' +
+            '<p id="credential-hint" class="connection-hint">The key never leaves the Electron main process except as tunnel-client environment data.</p>' +
+            '<div class="connection-actions">' +
+              '<button id="tunnel-connect" type="button" class="primary">Connect</button>' +
+              '<button id="tunnel-disconnect" type="button" hidden>Disconnect</button>' +
+            '</div>' +
           '</div>' +
           '<p id="tunnel-detail" class="connection-detail">Loading connection state…</p>' +
           '<p id="tunnel-runtime" class="connection-diagnostic"></p>' +
@@ -72,18 +75,12 @@ root.innerHTML =
             '<span id="chat-state" class="chat-state" data-state="idle">No session</span>' +
           '</div>' +
           '<p id="browser-extension-status" class="chat-bridge-status">Browser extension: checking…</p>' +
-          '<div class="chat-quick-actions">' +
-            '<button id="ask-selection" type="button">Ask selection</button>' +
-            '<button id="ask-page" type="button">Ask page</button>' +
-            '<button id="ask-document" type="button">Ask document</button>' +
-          '</div>' +
           '<div id="chat-timeline" class="chat-timeline" aria-live="polite">' +
-            '<p class="chat-empty">Open a PDF, then ask about its selection, current page, or whole document.</p>' +
+            '<p class="chat-empty">Open a PDF, then ask ChatGPT about that document.</p>' +
           '</div>' +
           '<div class="chat-composer">' +
             '<textarea id="chat-input" rows="3" maxlength="20000" placeholder="Ask about this PDF…"></textarea>' +
             '<div class="chat-composer-options">' +
-              '<label><input id="chat-attach" type="checkbox"> Attach current PDF</label>' +
               '<span id="chat-progress">Ready</span>' +
             '</div>' +
             '<div class="chat-composer-actions">' +
@@ -116,6 +113,8 @@ const empty = required<HTMLElement>('#reader-empty');
 const searchInput = required<HTMLInputElement>('#pdf-search');
 const tunnelIdInput = required<HTMLInputElement>('#tunnel-id');
 const tunnelKeyInput = required<HTMLInputElement>('#tunnel-key');
+const tunnelSettings = required<HTMLElement>('#tunnel-settings');
+const tunnelSettingsToggle = required<HTMLButtonElement>('#tunnel-settings-toggle');
 const tunnelConnectButton = required<HTMLButtonElement>('#tunnel-connect');
 const tunnelDisconnectButton = required<HTMLButtonElement>('#tunnel-disconnect');
 const tunnelState = required<HTMLElement>('#tunnel-state');
@@ -126,15 +125,11 @@ const chatState = required<HTMLElement>('#chat-state');
 const chatSessionMeta = required<HTMLElement>('#chat-session-meta');
 const chatTimeline = required<HTMLElement>('#chat-timeline');
 const chatInput = required<HTMLTextAreaElement>('#chat-input');
-const chatAttach = required<HTMLInputElement>('#chat-attach');
 const chatSendButton = required<HTMLButtonElement>('#chat-send');
 const chatCancelButton = required<HTMLButtonElement>('#chat-cancel');
 const chatProgress = required<HTMLElement>('#chat-progress');
 const chatError = required<HTMLElement>('#chat-error');
 const browserExtensionStatus = required<HTMLElement>('#browser-extension-status');
-const askSelectionButton = required<HTMLButtonElement>('#ask-selection');
-const askPageButton = required<HTMLButtonElement>('#ask-page');
-const askDocumentButton = required<HTMLButtonElement>('#ask-document');
 let searchRequest = 0;
 let openRequest = 0;
 let pageStateSeq = 0;
@@ -339,11 +334,7 @@ const renderChatSession = (session: ChatSessionSnapshot | null): void => {
   const hasDocument = chatDocumentId !== null;
   const sendBlocked = !hasDocument || view.busy || chatActionBusy || browserBridgeState?.active !== true;
   chatSendButton.disabled = sendBlocked;
-  askSelectionButton.disabled = sendBlocked;
-  askPageButton.disabled = sendBlocked;
-  askDocumentButton.disabled = sendBlocked;
   chatInput.disabled = !hasDocument || chatActionBusy;
-  chatAttach.disabled = !hasDocument || chatActionBusy;
   chatCancelButton.hidden = !view.cancellable;
   chatCancelButton.disabled = chatActionBusy || !view.cancellable;
 
@@ -356,8 +347,8 @@ const renderChatSession = (session: ChatSessionSnapshot | null): void => {
     const emptyMessage = document.createElement('p');
     emptyMessage.className = 'chat-empty';
     emptyMessage.textContent = hasDocument
-      ? 'Ask about the selection, current page, or whole document.'
-      : 'Open a PDF, then ask about its selection, current page, or whole document.';
+      ? 'Ask ChatGPT about this document.'
+      : 'Open a PDF, then ask ChatGPT about that document.';
     chatTimeline.append(emptyMessage);
     return;
   }
@@ -444,12 +435,12 @@ const refreshChatSession = async (): Promise<void> => {
   }
 };
 
-const sendChat = async (scope: ChatScope, fallback: string): Promise<void> => {
+const sendChat = async (): Promise<void> => {
   const documentId = chatDocumentId;
   if (!documentId || chatActionBusy) return;
   const generation = chatGeneration;
   const typed = chatInput.value.trim();
-  const text = typed || fallback;
+  const text = typed;
   if (!text) {
     chatError.hidden = false;
     chatError.textContent = 'Enter a question first.';
@@ -462,8 +453,8 @@ const sendChat = async (scope: ChatScope, fallback: string): Promise<void> => {
     const next = await window.pdfAi.chatSend({
       documentId,
       text,
-      scope,
-      attachDocument: chatAttach.checked
+      scope: 'document',
+      attachDocument: false
     });
     if (!shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
     if (typed && chatInput.value.trim() === typed) chatInput.value = '';
@@ -483,14 +474,11 @@ const sendChat = async (scope: ChatScope, fallback: string): Promise<void> => {
   }
 };
 
-askSelectionButton.addEventListener('click', () => void sendChat('selection', 'Explain the selected passage and its significance.'));
-askPageButton.addEventListener('click', () => void sendChat('page', 'Summarize the current page and its key points.'));
-askDocumentButton.addEventListener('click', () => void sendChat('document', 'Summarize this document and its key points.'));
-chatSendButton.addEventListener('click', () => void sendChat('custom', ''));
+chatSendButton.addEventListener('click', () => void sendChat());
 chatInput.addEventListener('keydown', event => {
   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
     event.preventDefault();
-    void sendChat('custom', '');
+    void sendChat();
   }
 });
 chatCancelButton.addEventListener('click', async () => {
@@ -596,6 +584,13 @@ tunnelDisconnectButton.addEventListener('click', async () => {
 
 tunnelKeyInput.addEventListener('keydown', event => {
   if (event.key === 'Enter') tunnelConnectButton.click();
+});
+
+tunnelSettingsToggle.addEventListener('click', () => {
+  const expanded = tunnelSettings.hidden;
+  tunnelSettings.hidden = !expanded;
+  tunnelSettingsToggle.setAttribute('aria-expanded', String(expanded));
+  tunnelSettingsToggle.textContent = expanded ? 'Hide settings' : 'Show settings';
 });
 
 void window.pdfAi.runtimeInfo().then(info => {

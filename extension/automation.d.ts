@@ -8,6 +8,7 @@ export function conversationFromUrl(url: string): string | null;
 export interface ChatAutomation {
   cancelCommand(command: unknown): Promise<{ status: 'ok' | 'failed'; error?: string }>;
   drainEvents(): Promise<unknown>;
+  handleTabRemoved(tabId: number): Promise<void>;
   handleRuntimeMessage(message: unknown, sender: unknown): Promise<unknown>;
   processCommand(command: unknown): Promise<{ status: 'ok' | 'failed'; error?: string }>;
   restoreOwnedChats(): Promise<void>;
