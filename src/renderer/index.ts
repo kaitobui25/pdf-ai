@@ -1,6 +1,8 @@
 import './styles.css';
 import type { TunnelConnectionStatus } from '../shared/tunnel.js';
+import type { ChatScope, ChatSessionSnapshot } from '../shared/chat.js';
 import { PdfReader } from './pdf-reader.js';
+import { canNavigateChatReference, chatStatusView, shouldApplyChatResult } from './chat-ui.js';
 import { tunnelViewState } from './tunnel-ui.js';
 
 const root = document.querySelector<HTMLElement>('#app');
@@ -63,7 +65,32 @@ root.innerHTML =
           '<p id="tunnel-detail" class="connection-detail">Loading connection state…</p>' +
           '<p id="tunnel-runtime" class="connection-diagnostic"></p>' +
         '</section>' +
-        '<div class="phase-note"><p>ChatGPT browser automation remains disabled until Phase 5. Phase 4.1 only owns the secure MCP connection.</p></div>' +
+        '<section class="chat-workspace" aria-labelledby="chat-session-title">' +
+          '<div class="chat-session-heading">' +
+            '<div><strong id="chat-session-title">Document chat</strong><p id="chat-session-meta">Open a PDF to start a session.</p></div>' +
+            '<span id="chat-state" class="chat-state" data-state="idle">No session</span>' +
+          '</div>' +
+          '<div class="chat-quick-actions">' +
+            '<button id="ask-selection" type="button">Ask selection</button>' +
+            '<button id="ask-page" type="button">Ask page</button>' +
+            '<button id="ask-document" type="button">Ask document</button>' +
+          '</div>' +
+          '<div id="chat-timeline" class="chat-timeline" aria-live="polite">' +
+            '<p class="chat-empty">Open a PDF, then ask about its selection, current page, or whole document.</p>' +
+          '</div>' +
+          '<div class="chat-composer">' +
+            '<textarea id="chat-input" rows="3" maxlength="20000" placeholder="Ask about this PDF…"></textarea>' +
+            '<div class="chat-composer-options">' +
+              '<label><input id="chat-attach" type="checkbox"> Attach current PDF</label>' +
+              '<span id="chat-progress">Ready</span>' +
+            '</div>' +
+            '<div class="chat-composer-actions">' +
+              '<button id="chat-cancel" type="button" hidden>Cancel pending</button>' +
+              '<button id="chat-send" type="button" class="primary">Send</button>' +
+            '</div>' +
+            '<p id="chat-error" class="chat-error" hidden></p>' +
+          '</div>' +
+        '</section>' +
       '</div>' +
     '</aside>' +
   '</div>';
@@ -93,6 +120,18 @@ const tunnelState = required<HTMLElement>('#tunnel-state');
 const tunnelDetail = required<HTMLElement>('#tunnel-detail');
 const tunnelRuntime = required<HTMLElement>('#tunnel-runtime');
 const credentialHint = required<HTMLElement>('#credential-hint');
+const chatState = required<HTMLElement>('#chat-state');
+const chatSessionMeta = required<HTMLElement>('#chat-session-meta');
+const chatTimeline = required<HTMLElement>('#chat-timeline');
+const chatInput = required<HTMLTextAreaElement>('#chat-input');
+const chatAttach = required<HTMLInputElement>('#chat-attach');
+const chatSendButton = required<HTMLButtonElement>('#chat-send');
+const chatCancelButton = required<HTMLButtonElement>('#chat-cancel');
+const chatProgress = required<HTMLElement>('#chat-progress');
+const chatError = required<HTMLElement>('#chat-error');
+const askSelectionButton = required<HTMLButtonElement>('#ask-selection');
+const askPageButton = required<HTMLButtonElement>('#ask-page');
+const askDocumentButton = required<HTMLButtonElement>('#ask-document');
 let searchRequest = 0;
 let openRequest = 0;
 let pageStateSeq = 0;
@@ -100,6 +139,12 @@ let selectionStateSeq = 0;
 let tunnelSetupInitialized = false;
 let tunnelActionBusy = false;
 let tunnelPollBusy = false;
+let chatDocumentId: string | null = null;
+let chatGeneration = 0;
+let chatPollRequest = 0;
+let chatActionBusy = false;
+let currentChatSession: ChatSessionSnapshot | null = null;
+let renderedChatKey = '';
 
 const reader = new PdfReader(
   { viewport, pages, outline, thumbnails },
@@ -113,6 +158,12 @@ const reader = new PdfReader(
       empty.hidden = opened !== null;
       document.title = opened ? opened.name + ' — PDF-AI' : 'PDF-AI';
       searchPanel.innerHTML = '<p class="sidebar-empty">Search results appear here.</p>';
+      chatDocumentId = opened?.documentId ?? null;
+      chatGeneration++;
+      currentChatSession = null;
+      renderedChatKey = '';
+      renderChatSession(null);
+      void refreshChatSession();
     },
     onPageChanged: (page, count) => {
       pageInput.value = String(page);
@@ -252,6 +303,180 @@ const runSearch = async (): Promise<void> => {
   }
 };
 
+const chatSessionKey = (session: ChatSessionSnapshot | null): string => session
+  ? `${session.sessionId}:${session.updatedAt}:${session.state}:${session.pendingState ?? ''}:${session.nextSeq}`
+  : `none:${chatDocumentId ?? ''}:${chatGeneration}`;
+
+const renderChatSession = (session: ChatSessionSnapshot | null): void => {
+  const view = chatStatusView(session);
+  chatState.textContent = chatDocumentId ? view.label : 'No session';
+  chatState.dataset.state = session?.state ?? 'idle';
+  chatSessionMeta.textContent = !chatDocumentId
+    ? 'Open a PDF to start a session.'
+    : session
+      ? `Session ${session.sessionId.slice(0, 8)} · ${session.conversationId ? `Chat ${session.conversationId.slice(0, 8)}` : 'new ChatGPT conversation'}`
+      : 'No messages yet for this PDF.';
+  chatProgress.textContent = session?.state === 'uncertain'
+    ? 'Delivery is uncertain. PDF-AI will not resend automatically.'
+    : view.busy ? view.label + '…' : 'Ready';
+  chatError.hidden = !session?.error;
+  chatError.textContent = session?.error ?? '';
+
+  const hasDocument = chatDocumentId !== null;
+  const sendBlocked = !hasDocument || view.busy || chatActionBusy;
+  chatSendButton.disabled = sendBlocked;
+  askSelectionButton.disabled = sendBlocked;
+  askPageButton.disabled = sendBlocked;
+  askDocumentButton.disabled = sendBlocked;
+  chatInput.disabled = !hasDocument || chatActionBusy;
+  chatAttach.disabled = !hasDocument || chatActionBusy;
+  chatCancelButton.hidden = !view.cancellable;
+  chatCancelButton.disabled = chatActionBusy || !view.cancellable;
+
+  const key = chatSessionKey(session);
+  if (key === renderedChatKey) return;
+  renderedChatKey = key;
+  const nearBottom = chatTimeline.scrollHeight - chatTimeline.scrollTop - chatTimeline.clientHeight < 56;
+  chatTimeline.replaceChildren();
+  if (!session?.messages.length) {
+    const emptyMessage = document.createElement('p');
+    emptyMessage.className = 'chat-empty';
+    emptyMessage.textContent = hasDocument
+      ? 'Ask about the selection, current page, or whole document.'
+      : 'Open a PDF, then ask about its selection, current page, or whole document.';
+    chatTimeline.append(emptyMessage);
+    return;
+  }
+  const messages = [...session.messages].sort((a, b) => a.originSeq - b.originSeq);
+  for (const message of messages) {
+    const article = document.createElement('article');
+    article.className = `chat-message is-${message.role}`;
+    article.dataset.messageId = message.id;
+    const heading = document.createElement('div');
+    heading.className = 'chat-message-heading';
+    const role = document.createElement('strong');
+    role.textContent = message.role === 'user' ? 'You' : 'Assistant';
+    const stateLabel = document.createElement('span');
+    stateLabel.textContent = message.role === 'assistant' && !message.final ? 'Responding…' : '';
+    heading.append(role, stateLabel);
+    const body = document.createElement('p');
+    body.textContent = message.text;
+    article.append(heading, body);
+    if (message.pageReferences.length) {
+      const references = document.createElement('div');
+      references.className = 'chat-page-references';
+      for (const reference of message.pageReferences) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = `Page ${reference.page}`;
+        button.title = reference.reference;
+        button.disabled = !canNavigateChatReference(reference, reader.documentId, reader.pageCount);
+        button.addEventListener('click', () => {
+          if (canNavigateChatReference(reference, reader.documentId, reader.pageCount)) {
+            reader.goToPage(reference.page);
+          }
+        });
+        references.append(button);
+      }
+      article.append(references);
+    }
+    chatTimeline.append(article);
+  }
+  if (nearBottom) chatTimeline.scrollTop = chatTimeline.scrollHeight;
+};
+
+const refreshChatSession = async (): Promise<void> => {
+  const documentId = chatDocumentId;
+  const generation = chatGeneration;
+  const request = ++chatPollRequest;
+  if (!documentId) {
+    currentChatSession = null;
+    renderChatSession(null);
+    return;
+  }
+  try {
+    const next = await window.pdfAi.chatSession(documentId);
+    if (request !== chatPollRequest || !shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
+    currentChatSession = next;
+    renderChatSession(next);
+  } catch (error) {
+    if (!shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
+    chatError.hidden = false;
+    chatError.textContent = error instanceof Error ? error.message : 'Could not load the local chat session.';
+  }
+};
+
+const sendChat = async (scope: ChatScope, fallback: string): Promise<void> => {
+  const documentId = chatDocumentId;
+  if (!documentId || chatActionBusy) return;
+  const generation = chatGeneration;
+  const typed = chatInput.value.trim();
+  const text = typed || fallback;
+  if (!text) {
+    chatError.hidden = false;
+    chatError.textContent = 'Enter a question first.';
+    return;
+  }
+  chatActionBusy = true;
+  chatError.hidden = true;
+  renderChatSession(currentChatSession);
+  try {
+    const next = await window.pdfAi.chatSend({
+      documentId,
+      text,
+      scope,
+      attachDocument: chatAttach.checked
+    });
+    if (!shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
+    if (typed && chatInput.value.trim() === typed) chatInput.value = '';
+    currentChatSession = next;
+    renderedChatKey = '';
+    renderChatSession(next);
+  } catch (error) {
+    if (!shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
+    chatError.hidden = false;
+    chatError.textContent = error instanceof Error ? error.message : 'Could not send the question.';
+  } finally {
+    chatActionBusy = false;
+    if (shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) {
+      renderChatSession(currentChatSession);
+      void refreshChatSession();
+    }
+  }
+};
+
+askSelectionButton.addEventListener('click', () => void sendChat('selection', 'Explain the selected passage and its significance.'));
+askPageButton.addEventListener('click', () => void sendChat('page', 'Summarize the current page and its key points.'));
+askDocumentButton.addEventListener('click', () => void sendChat('document', 'Summarize this document and its key points.'));
+chatSendButton.addEventListener('click', () => void sendChat('custom', ''));
+chatInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void sendChat('custom', '');
+  }
+});
+chatCancelButton.addEventListener('click', async () => {
+  const documentId = chatDocumentId;
+  if (!documentId || chatActionBusy) return;
+  const generation = chatGeneration;
+  chatActionBusy = true;
+  renderChatSession(currentChatSession);
+  try {
+    const next = await window.pdfAi.chatCancel(documentId);
+    if (!shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
+    currentChatSession = next;
+    renderedChatKey = '';
+    renderChatSession(next);
+  } catch (error) {
+    if (!shouldApplyChatResult(documentId, generation, chatDocumentId, chatGeneration)) return;
+    chatError.hidden = false;
+    chatError.textContent = error instanceof Error ? error.message : 'Could not cancel the pending input.';
+  } finally {
+    chatActionBusy = false;
+    void refreshChatSession();
+  }
+});
+
 required<HTMLButtonElement>('#search-button').addEventListener('click', () => void runSearch());
 searchInput.addEventListener('keydown', event => {
   if (event.key === 'Enter') void runSearch();
@@ -342,8 +567,11 @@ void window.pdfAi.runtimeInfo().then(info => {
 
 void refreshTunnelStatus();
 const tunnelPollTimer = window.setInterval(() => void refreshTunnelStatus(), 1_000);
+void refreshChatSession();
+const chatPollTimer = window.setInterval(() => void refreshChatSession(), 1_000);
 
 window.addEventListener('beforeunload', () => {
   window.clearInterval(tunnelPollTimer);
+  window.clearInterval(chatPollTimer);
   reader.destroy();
 }, { once: true });

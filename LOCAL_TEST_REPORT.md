@@ -130,3 +130,15 @@ Visual interaction with the native Open dialog was not automated because the con
 - extension automation/background/content syntax — PASS.
 - git diff --check — PASS.
 - npm run dev — PASS: Electron opened the `PDF-AI` window; startup logged only MCP loopback port `56396` plus bridge `8875`; `/hello` returned the expected PDF-AI identity/protocol; Ctrl-C stopped the app cleanly.
+
+## Phase 7
+
+- npm run typecheck — PASS.
+- npm test — PASS, 17 test files / 76 tests.
+  - Exact-current-document page references navigate; cross-document/page-0/out-of-range refs are inert PASS.
+  - A→B→A stale async chat result is rejected by generation even when the document ID returns to A PASS.
+  - Uncertain delivery is projected as an error/busy state with no unsafe cancel PASS.
+  - All earlier PDF/MCP/tunnel/bridge/automation/correlation suites remain PASS.
+- npm run build — PASS.
+- git diff --check — PASS.
+- npm run dev — PASS: Electron opened the `PDF-AI` window; startup logged MCP loopback port `57586` plus bridge `8875`; `/hello` returned the expected PDF-AI identity/protocol. Automated native clicking was unavailable in this tool session and is not claimed.

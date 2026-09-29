@@ -359,3 +359,23 @@ Validation before smoke/commit:
 - extension syntax checks: pass.
 - `git diff --check`: pass.
 - `npm run dev`: pass. Electron opened the `PDF-AI` window, MCP logged only loopback port `56396`, browser bridge `/hello` identified `pdf-ai` protocol 1 on port 8875, and Ctrl-C stopped the app cleanly.
+
+## Phase 7 — Complete local AI Chat UI
+
+Implemented:
+
+- Replaced the Phase-4 placeholder right pane with a durable per-document chat timeline and composer while retaining the secure tunnel connection card.
+- Added Ask selection, Ask current page, Ask document, custom Send, attach-current-PDF toggle, progress/error display, safe pre-authorization Cancel, and session/conversation indicator.
+- Local user/assistant rows are rendered only from the main-process durable chat snapshot. Streaming assistant revisions replace the same logical row through sequence metadata.
+- Added typed page-reference buttons. A page action is enabled only for the exact current `documentId` and an in-range page, then calls the existing local `PdfReader.goToPage()`.
+- Added document-generation fencing for async session refresh so stale A→B→A results cannot overwrite the current PDF chat.
+- Timeline auto-follows only when the user is already near the bottom; polling does not intentionally drag a user who scrolled upward.
+
+Validation:
+
+- `npm run typecheck`: pass.
+- `npm test`: pass, 17 files / 76 tests.
+- UI helper tests cover exact/cross-document/invalid page refs, A→B→A generation fencing, and uncertain-state no-cancel projection.
+- `npm run build`: pass.
+- `git diff --check`: pass.
+- `npm run dev`: pass. Electron opened the `PDF-AI` window, MCP logged only loopback port `57586`, and bridge `/hello` identified `pdf-ai` protocol 1 on port 8875. This session has no desktop-input connector, so native visual clicking was not claimed as automated coverage.

@@ -57,3 +57,9 @@ Phase 6 treats correlation as first-proof-wins durable state rather than timesta
 Immediately before the one native Send click, the content document requests authorization through its exact owned sender identity. The extension persists that authorization before replying. After authorization, a missing browser receipt is represented as `uncertain`; command replay/restart may resume observation but may not issue another Send. A recovered ownership marker republishes the exact native user-message receipt before assistant observation continues. Cancellation is accepted only before authorization.
 
 Assistant finality is monotonic. A stale streaming revision cannot overwrite a final answer, a completed input cannot acquire a second assistant message identity, and conflicting conversation/turn/request evidence is rejected. Event IDs provide bounded transport replay suppression, while these semantic identities remain the long-term idempotency boundary after the event-ID window rolls over.
+
+## Local chat UI boundary
+
+Phase 7 renders only the durable main-process chat snapshot. The renderer never chooses ChatGPT tabs or conversations. Its actions are limited to the current `documentId`, prompt text, an explicit scope (`selection`, `page`, `document`, or `custom`), and an optional attach-current-PDF flag. Session/conversation/input ownership remains outside the renderer.
+
+Chat polling is document-generation fenced, so a delayed A response cannot apply after A→B→A navigation. Timeline rows use the durable `originSeq` ordering and preserve a user who has scrolled away from the bottom. Assistant page references are typed data from main-process parsing; the renderer activates navigation only when the referenced `documentId` equals the exact current PDF and the page is within the current page count. Raw `pdf://` text is never navigated as an external URL.

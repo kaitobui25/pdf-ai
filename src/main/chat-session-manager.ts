@@ -375,7 +375,7 @@ export class ChatSessionManager {
     if (!session?.pendingInputId) throw new Error('There is no pending ChatGPT input to cancel.');
     const input = session.inputs.find(candidate => candidate.id === session.pendingInputId);
     if (!input) throw new Error('The pending ChatGPT input is missing.');
-    if (input.state === 'authorized' || input.state === 'uncertain') {
+    if (input.state !== 'queued') {
       throw new Error('This send may already have reached ChatGPT and cannot be cancelled safely.');
     }
     await this.bridge.enqueueCommand('chat_cancel', {
