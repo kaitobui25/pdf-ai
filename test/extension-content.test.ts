@@ -11,6 +11,9 @@ interface ContentHooks {
   messages(): Array<{ role: string; id: string; text: string }>;
   composer(): unknown;
   sendButton(): unknown;
+  composerFileName(button: Element): string | undefined;
+  hasComposerAttachments(): boolean;
+  fileUploadInput(): HTMLInputElement | null;
 }
 
 describe('PDF-AI ChatGPT content script', () => {
@@ -28,6 +31,8 @@ describe('PDF-AI ChatGPT content script', () => {
       <div>[[PDF-AI:33333333-3333-4333-8333-333333333333:44444444-4444-4444-8444-444444444444]] unrelated</div>
       <form data-chatgpt-composer>
         <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <input type="file" accept="image/*">
+        <input id="generic-upload" type="file">
         <button type="button" data-testid="send-button">Send</button>
       </form>
     </body></html>`, {
@@ -59,6 +64,22 @@ describe('PDF-AI ChatGPT content script', () => {
       ]);
       expect(api.composer()).not.toBeNull();
       expect(api.sendButton()).not.toBeNull();
+      expect(api.fileUploadInput()?.id).toBe('generic-upload');
+      expect(api.hasComposerAttachments()).toBe(false);
+
+      const form = dom.window.document.querySelector('form')!;
+      const tile = dom.window.document.createElement('div');
+      tile.setAttribute('role', 'group');
+      tile.setAttribute('aria-label', '11428195_EN.pdf');
+      const defaultAction = dom.window.document.createElement('div');
+      defaultAction.setAttribute('data-default-action', 'true');
+      defaultAction.append(dom.window.document.createElement('button'));
+      const remove = dom.window.document.createElement('button');
+      remove.setAttribute('aria-label', 'Remove file: 11428195_EN.pdf');
+      tile.append(defaultAction, remove);
+      form.append(tile);
+      expect(api.composerFileName(remove)).toBe('11428195_EN.pdf');
+      expect(api.hasComposerAttachments()).toBe(true);
     } finally {
       window.__PDF_AI_CONTENT__?.stop?.();
       dom.window.close();

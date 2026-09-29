@@ -162,3 +162,20 @@ Visual interaction with the native Open dialog was not automated because the con
 - Actual local structured log smoke — PASS: `%APPDATA%\\PDF-AI\\pdf-ai.log.jsonl` was created with a bounded `app_ready` metadata record and contained no MCP secret path or `sk-...` credential-shaped value.
 
 Manual boundary still applies: this tool session cannot click the native Open dialog or a real ChatGPT web page, so the automated suite proves the local reader/MCP/bridge/extension contracts and recovery logic; a human browser interaction remains the final physical UI check for a live ChatGPT account/connector.
+
+## Post-Phase-8 live extension-connectivity regression
+
+- Reproduced live: tunnel connected, chat input queued, bridge had no paired extension, Chrome profile had no loaded PDF-AI Bridge extension.
+- Browser bridge paired/recent-activity status regression test — PASS.
+- `npm run typecheck` — PASS.
+- Focused `test/bridge.test.ts test/chat-ui.test.ts` — PASS, 14 tests.
+- `npm run build` — PASS.
+- `git diff --check` — PASS.
+
+Live follow-up with **Attach current PDF** enabled:
+
+- Existing queued input was claimed by the real extension and failed before Send with `pdf_upload_failed`; local durable state confirmed no conversation/user-message receipt was created, so no ambiguous resend boundary was crossed.
+- Upload selection/receipt logic updated to exact composer + exactly one generic file input + exact newly owned attachment tile + settled upload proof.
+- Content-script test now distinguishes the generic file input from an image-only file input and verifies native attachment filename extraction/state.
+- Integration-test transport is fenced to the exact test bridge port so a running dev app on another PDF-AI port cannot be paired or mutated by tests.
+- Full `npm test` after fixes — PASS, 18 files / 83 tests.

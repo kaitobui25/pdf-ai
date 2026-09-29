@@ -30,12 +30,19 @@ class MemoryStorage implements BridgeStorageArea {
 }
 
 function extensionFetch(
-  loseFirstAckResponse: { value: boolean }
+  loseFirstAckResponse: { value: boolean },
+  allowedPort: number
 ): typeof fetch {
   return async (input, init) => {
     const headers = new Headers(init?.headers);
-    const response = await fetch(input, { ...init, headers });
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (Number(new URL(url).port) !== allowedPort) {
+      return new Response(JSON.stringify({ error: 'test_port_isolation' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    const response = await fetch(input, { ...init, headers });
     if (new URL(url).pathname === '/commands/ack' && loseFirstAckResponse.value) {
       loseFirstAckResponse.value = false;
       await response.arrayBuffer();
@@ -57,7 +64,7 @@ describe('PDF-AI app and MV3 bridge client integration', () => {
     const localStorage = new MemoryStorage();
     const sessionStorage = new MemoryStorage();
     const loseFirstAckResponse = { value: true };
-    const fetchImpl = extensionFetch(loseFirstAckResponse);
+    const fetchImpl = extensionFetch(loseFirstAckResponse, bridge.port);
 
     const firstWorker = createBridgeClient({
       fetch: fetchImpl,

@@ -415,3 +415,22 @@ Validation:
 - Extension `node --check` and manifest parse: pass.
 - `git diff --check`: pass (Git only reports existing LF→CRLF working-tree notices).
 - `npm run dev`: pass. Electron opened PDF-AI, MCP logged only loopback port `59073`, bridge `/hello` returned `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1 on port 8875, and the actual structured local log contained only `app_ready` with MCP/bridge port metadata. The already-running Chat On Steroids tunnel-client PID 31592 remained alive after the PDF-AI process tree was stopped.
+
+## Post-Phase-8 live browser-extension connectivity fix
+
+A manual live run exposed a missing UX boundary: the OpenAI MCP tunnel could show `Connected` while the unpacked PDF-AI Chrome extension had never been loaded. In that state, `chat_send` was durably queued and the local UI remained on `Sending`, but no browser worker existed to claim it. Inspection of `%APPDATA%\\PDF-AI\\pdf-ai.bridge-state.json` showed one pending `chat_send` with no paired extension credential, and Chrome profile Preferences contained no PDF-AI extension entry.
+
+Fix:
+
+- Browser bridge now exposes a safe status projection containing paired/recently-active state, last-seen timestamp, queue depth and bridge port; bearer token/extension credential are not exposed.
+- Pairing or a valid protected extension request refreshes the recent-activity heartbeat. The renderer displays browser-extension state separately from MCP tunnel state.
+- New chat sends fail immediately with an actionable `load or reload the unpacked PDF-AI Bridge extension` error when no extension is recently active; they no longer create a misleading new `Sending` item.
+- The existing durable queue behavior remains unchanged. A prompt queued before this fix can still be claimed exactly once when the extension is later loaded/reconnected.
+
+Validation: `npm run typecheck` PASS; focused bridge/UI tests PASS (14/14); `npm run build` PASS; `git diff --check` PASS.
+
+The same live retry then exposed a second real browser-side issue because the queued input had `Attach current PDF` enabled: the extension claimed the command but returned `pdf_upload_failed` before any prompt was sent. The content-script upload path was tightened to the current CoS-vetted pattern: exactly one generic file input from the exact composer, no pre-existing attachment/upload state, exact new native attachment-tile ownership, stable tile identity after binding, and upload-settled/send-enabled proof before continuing. Failures now return specific safe error codes such as `pdf_upload_input_unavailable` or `pdf_upload_receipt_timeout` instead of the generic failure.
+
+The live app also revealed a test isolation flaw: while PDF-AI was already listening on 8875, the app/extension integration test could discover that production dev bridge before its own test bridge on a later PDF-AI port. The test fetch is now hard-fenced to the exact test bridge port so tests cannot pair with or mutate a simultaneously running PDF-AI instance.
+
+Final regression validation after both fixes: `npm run typecheck` PASS; focused content/bridge/integration tests PASS; full `npm test` PASS, 18 files / 83 tests; `npm run build` PASS; extension content syntax PASS; `git diff --check` PASS.

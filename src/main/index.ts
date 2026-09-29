@@ -102,7 +102,6 @@ if (!hasSingleInstanceLock) {
     await chatManager.initialize();
     const chatSystemStatus = await chatManager.getSystemStatus();
     if (chatSystemStatus.recoveryNotice) localLogger.warn('chat_state_recovery', { recovered: true });
-    registerIpc(documentEngine, tunnelManager, chatManager);
     browserBridge = await startBrowserBridge(
       new JsonBridgeStateStore(path.join(userData, BRIDGE_STATE_FILE)),
       {
@@ -112,6 +111,7 @@ if (!hasSingleInstanceLock) {
       }
     );
     chatManager.setBridge(browserBridge);
+    registerIpc(documentEngine, tunnelManager, chatManager, browserBridge);
     console.info('PDF AI MCP: listening on 127.0.0.1:' + mcpEndpoint.port);
     console.info('PDF-AI browser bridge:', browserBridge.url);
     localLogger.info('app_ready', { mcpPort: mcpEndpoint.port, bridgePort: browserBridge.port });

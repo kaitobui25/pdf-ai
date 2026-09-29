@@ -635,3 +635,13 @@ button.primary {
     width: 130px;
   }
 }
+.chat-bridge-status {
+  margin: 0;
+  padding: 0 22px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-bridge-status.is-error {
+  color: #d9a3a3;
+}

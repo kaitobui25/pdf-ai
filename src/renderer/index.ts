@@ -1,5 +1,6 @@
 import './styles.css';
 import type { TunnelConnectionStatus } from '../shared/tunnel.js';
+import type { BrowserBridgeStatus } from '../shared/api.js';
 import type { ChatScope, ChatSessionSnapshot } from '../shared/chat.js';
 import { PdfReader } from './pdf-reader.js';
 import { canNavigateChatReference, chatStatusView, shouldApplyChatResult } from './chat-ui.js';
@@ -70,6 +71,7 @@ root.innerHTML =
             '<div><strong id="chat-session-title">Document chat</strong><p id="chat-session-meta">Open a PDF to start a session.</p></div>' +
             '<span id="chat-state" class="chat-state" data-state="idle">No session</span>' +
           '</div>' +
+          '<p id="browser-extension-status" class="chat-bridge-status">Browser extension: checking…</p>' +
           '<div class="chat-quick-actions">' +
             '<button id="ask-selection" type="button">Ask selection</button>' +
             '<button id="ask-page" type="button">Ask page</button>' +
@@ -129,6 +131,7 @@ const chatSendButton = required<HTMLButtonElement>('#chat-send');
 const chatCancelButton = required<HTMLButtonElement>('#chat-cancel');
 const chatProgress = required<HTMLElement>('#chat-progress');
 const chatError = required<HTMLElement>('#chat-error');
+const browserExtensionStatus = required<HTMLElement>('#browser-extension-status');
 const askSelectionButton = required<HTMLButtonElement>('#ask-selection');
 const askPageButton = required<HTMLButtonElement>('#ask-page');
 const askDocumentButton = required<HTMLButtonElement>('#ask-document');
@@ -146,6 +149,8 @@ let chatActionBusy = false;
 let currentChatSession: ChatSessionSnapshot | null = null;
 let renderedChatKey = '';
 let chatRecoveryNotice: string | null = null;
+let browserBridgePollBusy = false;
+let browserBridgeState: BrowserBridgeStatus | null = null;
 
 const reader = new PdfReader(
   { viewport, pages, outline, thumbnails },
@@ -319,13 +324,20 @@ const renderChatSession = (session: ChatSessionSnapshot | null): void => {
       : 'No messages yet for this PDF.';
   chatProgress.textContent = session?.state === 'uncertain'
     ? 'Delivery is uncertain. PDF-AI will not resend automatically.'
-    : view.busy ? view.label + '…' : 'Ready';
-  const visibleError = session?.error ?? chatRecoveryNotice;
+    : browserBridgeState?.active === false
+      ? 'Browser extension not connected.'
+      : view.busy ? view.label + '…' : 'Ready';
+  const bridgeError = browserBridgeState?.active === false
+    ? browserBridgeState.paired
+      ? 'PDF-AI browser extension is paired but not active. Reload the PDF-AI Bridge extension in Chrome.'
+      : 'PDF-AI browser extension is not connected. Load the unpacked PDF-AI Bridge extension in Chrome.'
+    : null;
+  const visibleError = session?.error ?? chatRecoveryNotice ?? bridgeError;
   chatError.hidden = !visibleError;
   chatError.textContent = visibleError ?? '';
 
   const hasDocument = chatDocumentId !== null;
-  const sendBlocked = !hasDocument || view.busy || chatActionBusy;
+  const sendBlocked = !hasDocument || view.busy || chatActionBusy || browserBridgeState?.active !== true;
   chatSendButton.disabled = sendBlocked;
   askSelectionButton.disabled = sendBlocked;
   askPageButton.disabled = sendBlocked;
@@ -385,6 +397,30 @@ const renderChatSession = (session: ChatSessionSnapshot | null): void => {
     chatTimeline.append(article);
   }
   if (nearBottom) chatTimeline.scrollTop = chatTimeline.scrollHeight;
+};
+
+const renderBrowserBridgeStatus = (next: BrowserBridgeStatus): void => {
+  browserBridgeState = next;
+  browserExtensionStatus.textContent = next.active
+    ? `Browser extension connected · bridge ${next.port}`
+    : next.paired
+      ? 'Browser extension paired but inactive'
+      : 'Browser extension not connected';
+  browserExtensionStatus.classList.toggle('is-error', !next.active);
+  renderChatSession(currentChatSession);
+};
+
+const refreshBrowserBridgeStatus = async (): Promise<void> => {
+  if (browserBridgePollBusy) return;
+  browserBridgePollBusy = true;
+  try {
+    renderBrowserBridgeStatus(await window.pdfAi.browserBridgeStatus());
+  } catch {
+    browserExtensionStatus.textContent = 'Browser extension status unavailable';
+    browserExtensionStatus.classList.add('is-error');
+  } finally {
+    browserBridgePollBusy = false;
+  }
 };
 
 const refreshChatSession = async (): Promise<void> => {
@@ -574,11 +610,14 @@ void window.pdfAi.chatSystemStatus().then(next => {
 
 void refreshTunnelStatus();
 const tunnelPollTimer = window.setInterval(() => void refreshTunnelStatus(), 1_000);
+void refreshBrowserBridgeStatus();
+const browserBridgePollTimer = window.setInterval(() => void refreshBrowserBridgeStatus(), 1_000);
 void refreshChatSession();
 const chatPollTimer = window.setInterval(() => void refreshChatSession(), 1_000);
 
 window.addEventListener('beforeunload', () => {
   window.clearInterval(tunnelPollTimer);
+  window.clearInterval(browserBridgePollTimer);
   window.clearInterval(chatPollTimer);
   reader.destroy();
 }, { once: true });

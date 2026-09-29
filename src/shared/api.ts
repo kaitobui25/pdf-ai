@@ -10,6 +10,14 @@ export interface RuntimeInfo {
   mcpConnectorName: string;
 }
 
+export interface BrowserBridgeStatus {
+  paired: boolean;
+  active: boolean;
+  lastSeenAt: number | null;
+  queuedCommands: number;
+  port: number;
+}
+
 export interface PdfAiApi {
   runtimeInfo(): Promise<RuntimeInfo>;
   openPdf(): Promise<PdfOpenResult>;
@@ -27,4 +35,5 @@ export interface PdfAiApi {
   chatSend(input: ChatSendInput): Promise<ChatSessionSnapshot>;
   chatCancel(documentId: string): Promise<ChatSessionSnapshot>;
   chatSystemStatus(): Promise<ChatSystemStatus>;
+  browserBridgeStatus(): Promise<BrowserBridgeStatus>;
 }

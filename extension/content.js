@@ -210,13 +210,38 @@
     return bytes;
   }
 
-  function attachmentPresent(name) {
+  function composerFileName(button) {
+    const tile = button?.closest?.('[data-composer-attachments] [role="button"][aria-label]');
+    if (tile && tile !== button) {
+      const name = tile.getAttribute('aria-label');
+      const actions = [...tile.querySelectorAll('button')];
+      if (name && actions.length === 1 && actions[0] === button &&
+          [...tile.querySelectorAll('img[alt]')].some(image => image.getAttribute('alt') === name)) return name;
+    }
+    const group = button?.closest?.('[role="group"][aria-label]');
+    if (group?.querySelector('[data-default-action="true"] button')) {
+      const actions = [...group.querySelectorAll('button')].filter(node => !node.closest('[data-default-action="true"]'));
+      return actions.length === 1 && actions[0] === button ? group.getAttribute('aria-label') : undefined;
+    }
+    return /^Remove file(?: \d+)?: (.+)$/.exec(button?.getAttribute?.('aria-label') || '')?.[1];
+  }
+
+  function attachmentButtons(host = composerHost()) {
+    return host ? [...host.querySelectorAll('button[aria-label]')].filter(button => composerFileName(button)) : [];
+  }
+
+  function hasComposerAttachments() {
     const host = composerHost();
-    if (!host) return false;
-    return [...host.querySelectorAll('[aria-label], img[alt]')].some(node =>
-      node.getAttribute('aria-label') === name || node.getAttribute('alt') === name ||
-      (node.getAttribute('aria-label') || '').endsWith(`: ${name}`)
+    return !!host && (!!host.querySelector('[data-inline-file-uploading], [role="progressbar"]') || attachmentButtons(host).length > 0);
+  }
+
+  function fileUploadInput() {
+    const host = composerHost();
+    if (!host) return null;
+    const candidates = [...host.querySelectorAll('input[type="file"]')].filter(input =>
+      !input.disabled && !(input.getAttribute('accept') || '').trim()
     );
+    return candidates.length === 1 ? candidates[0] : null;
   }
 
   async function loadDocumentFile(command) {
@@ -252,19 +277,54 @@
 
   async function uploadDocument(command) {
     const host = composerHost();
-    if (!host || attachmentPresent(command.document?.name || '')) return false;
-    const inputs = [...host.querySelectorAll('input[type="file"]')].filter(input => {
-      if (input.disabled) return false;
-      const accept = (input.getAttribute('accept') || '').toLowerCase();
-      return !accept || accept.includes('pdf') || accept.includes('application/') || accept.includes('*/*');
+    if (!host) return { ok: false, error: 'pdf_upload_composer_missing' };
+    if (hasComposerAttachments()) return { ok: false, error: 'pdf_upload_existing_attachment' };
+    const input = fileUploadInput();
+    if (!input) return { ok: false, error: 'pdf_upload_input_unavailable' };
+    let file;
+    try {
+      file = await loadDocumentFile(command);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'pdf_upload_document_read_failed' };
+    }
+    const priorTiles = new Set(attachmentButtons(host));
+    try {
+      const transfer = new DataTransfer();
+      transfer.items.add(file);
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch {
+      return { ok: false, error: 'pdf_upload_dispatch_failed' };
+    }
+
+    const receipt = await new Promise(resolve => {
+      let observer = null;
+      let timer = null;
+      let ownedTile = null;
+      const finish = value => {
+        observer?.disconnect();
+        if (timer !== null) clearTimeout(timer);
+        resolve(value);
+      };
+      const check = () => {
+        if (!host.isConnected || composerHost() !== host) return finish({ ok: false, error: 'pdf_upload_composer_replaced' });
+        const current = attachmentButtons(host).filter(button => !priorTiles.has(button));
+        if (current.length > 1) return finish({ ok: false, error: 'pdf_upload_ambiguous_attachment' });
+        if (!ownedTile && current.length === 1 && composerFileName(current[0]) === file.name) ownedTile = current[0];
+        if (!ownedTile) return;
+        const currentAfterBind = attachmentButtons(host).filter(button => !priorTiles.has(button));
+        if (currentAfterBind.length !== 1 || currentAfterBind[0] !== ownedTile) {
+          return finish({ ok: false, error: 'pdf_upload_attachment_changed' });
+        }
+        const uploading = host.querySelector('[data-inline-file-uploading], [role="progressbar"], [aria-busy="true"]');
+        if (!uploading && sendEnabled(sendButton())) finish({ ok: true });
+      };
+      observer = new MutationObserver(check);
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      timer = setTimeout(() => finish({ ok: false, error: 'pdf_upload_receipt_timeout' }), 180_000);
+      check();
     });
-    if (inputs.length !== 1) return false;
-    const file = await loadDocumentFile(command);
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    inputs[0].files = transfer.files;
-    inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
-    return Boolean(await waitFor(() => attachmentPresent(file.name) && sendEnabled(sendButton()), 120_000, 200));
+    return receipt;
   }
 
   function eventBase(command, kind, conversation = conversationId()) {
@@ -315,7 +375,8 @@
 
     const events = [];
     if (command.attachDocument === true) {
-      if (!await uploadDocument(command)) return { ok: false, error: 'pdf_upload_failed' };
+      const uploaded = await uploadDocument(command);
+      if (!uploaded.ok) return uploaded;
       events.push({ ...eventBase(command, 'attachment_uploaded', conversationId()) });
     }
     if (!setComposerText(command.prompt)) return { ok: false, error: 'composer_insert_failed' };
@@ -500,7 +561,17 @@
   globalThis.__PDF_AI_CONTENT__ = handle;
 
   if (typeof globalThis.__PDF_AI_CONTENT_TEST_HOOK__ === 'function') {
-    globalThis.__PDF_AI_CONTENT_TEST_HOOK__({ conversationId, markerOf, messages, ownershipMarkers, composer, sendButton });
+    globalThis.__PDF_AI_CONTENT_TEST_HOOK__({
+      conversationId,
+      markerOf,
+      messages,
+      ownershipMarkers,
+      composer,
+      sendButton,
+      composerFileName,
+      hasComposerAttachments,
+      fileUploadInput
+    });
   }
 
   pageReady();

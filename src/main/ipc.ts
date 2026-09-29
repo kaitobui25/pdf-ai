@@ -15,6 +15,7 @@ import { PdfDocumentEngine } from './pdf-document-engine.js';
 import { pdfOpenError } from './pdf-file.js';
 import { TunnelManager } from './tunnel-manager.js';
 import { ChatSessionManager } from './chat-session-manager.js';
+import type { BrowserBridge } from './bridge.js';
 
 const tunnelConnectSchema = z.object({
   tunnelId: z.string().min(1).max(80),
@@ -32,7 +33,8 @@ const chatSendSchema = z.object({
 export function registerIpc(
   engine: PdfDocumentEngine,
   tunnelManager: TunnelManager,
-  chatManager: ChatSessionManager
+  chatManager: ChatSessionManager,
+  browserBridge: BrowserBridge
 ): void {
   ipcMain.handle('runtime:info', (): RuntimeInfo => ({
     appName: APP_NAME,
@@ -83,9 +85,14 @@ export function registerIpc(
   ipcMain.handle('tunnel:disconnect', (): Promise<TunnelConnectionStatus> => tunnelManager.disconnect());
   ipcMain.handle('chat:session', (_event, documentId: unknown): Promise<ChatSessionSnapshot | null> =>
     chatManager.getSession(documentIdSchema.parse(documentId)));
-  ipcMain.handle('chat:send', (_event, input: unknown): Promise<ChatSessionSnapshot> =>
-    chatManager.send(chatSendSchema.parse(input) as ChatSendInput));
+  ipcMain.handle('chat:send', (_event, input: unknown): Promise<ChatSessionSnapshot> => {
+    if (!browserBridge.getStatus().active) {
+      throw new Error('PDF-AI browser extension is not connected. Load or reload the unpacked PDF-AI Bridge extension in Chrome, then try again.');
+    }
+    return chatManager.send(chatSendSchema.parse(input) as ChatSendInput);
+  });
   ipcMain.handle('chat:cancel', (_event, documentId: unknown): Promise<ChatSessionSnapshot> =>
     chatManager.cancel(documentIdSchema.parse(documentId)));
   ipcMain.handle('chat:system-status', () => chatManager.getSystemStatus());
+  ipcMain.handle('browser:bridge-status', () => browserBridge.getStatus());
 }

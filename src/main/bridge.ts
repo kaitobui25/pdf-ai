@@ -9,6 +9,7 @@ import {
   BRIDGE_PROTOCOL,
   type BridgePort
 } from '../shared/constants.js';
+import type { BrowserBridgeStatus } from '../shared/api.js';
 
 const BRIDGE_VERSION = '0.1.0';
 const MAX_BODY_BYTES = 256 * 1024;
@@ -107,6 +108,7 @@ export interface BrowserBridge {
   port: BridgePort;
   url: string;
   enqueueCommand(type: string, payload: unknown): Promise<BridgeCommand>;
+  getStatus(): BrowserBridgeStatus;
   stop(): Promise<void>;
 }
 
@@ -281,6 +283,7 @@ export async function startBrowserBridge(
   let mutationQueue = Promise.resolve();
   let listeningPort: BridgePort | null = null;
   let stopping: Promise<void> | null = null;
+  let lastExtensionSeenAt: number | null = null;
   const requestTimes = new Map<string, number[]>();
   const commandWaiters = new Set<() => void>();
 
@@ -350,6 +353,7 @@ export async function startBrowserBridge(
     if (!token || !constantTimeEqual(token, credential.token)) {
       throw new BridgeHttpError(401, 'invalid_token');
     }
+    lastExtensionSeenAt = now();
     return credential;
   };
 
@@ -430,6 +434,7 @@ export async function startBrowserBridge(
         }
         const credential = state.credential;
         if (!credential) throw new BridgeHttpError(500, 'pairing_not_persisted');
+        lastExtensionSeenAt = now();
         json(req, res, 200, {
           appId: APP_ID,
           protocol: BRIDGE_PROTOCOL,
@@ -599,6 +604,13 @@ export async function startBrowserBridge(
       notifyCommandWaiters();
       return published;
     },
+    getStatus: (): BrowserBridgeStatus => ({
+      paired: state.credential !== null,
+      active: lastExtensionSeenAt !== null && now() - lastExtensionSeenAt <= 70_000,
+      lastSeenAt: lastExtensionSeenAt,
+      queuedCommands: state.commands.length,
+      port: listeningPort!
+    }),
     stop: () => {
       if (stopping) return stopping;
       stopping = (async () => {

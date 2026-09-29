@@ -74,6 +74,30 @@ afterEach(async () => {
 });
 
 describe('PDF-AI browser bridge', () => {
+  it('reports browser-extension pairing and recent activity separately from bridge listener health', async () => {
+    let clock = 10_000;
+    const { bridge } = await start(new MemoryBridgeStateStore(), { now: () => clock });
+    expect(bridge.getStatus()).toMatchObject({
+      paired: false,
+      active: false,
+      lastSeenAt: null,
+      queuedCommands: 0,
+      port: bridge.port
+    });
+
+    const token = await pair(bridge);
+    expect(bridge.getStatus()).toMatchObject({ paired: true, active: true, lastSeenAt: clock });
+
+    clock += 69_000;
+    expect(bridge.getStatus().active).toBe(true);
+    clock += 2_000;
+    expect(bridge.getStatus().active).toBe(false);
+
+    const status = await fetch(bridge.url + '/status', { headers: bridgeHeaders(token) });
+    expect(status.status).toBe(200);
+    expect(bridge.getStatus()).toMatchObject({ paired: true, active: true, lastSeenAt: clock });
+  });
+
   it('binds only the dedicated port range and identifies pdf-ai on /hello', async () => {
     const { bridge } = await start();
     expect(BRIDGE_PORTS).toContain(bridge.port);
