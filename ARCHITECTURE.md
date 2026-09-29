@@ -13,3 +13,8 @@ The browser bridge and MCP endpoint are separate transports. The bridge is loopb
 
 PDF-AI never reads or writes another application's runtime state. Its app/user-data identity, local storage, bridge identifier, bridge ports, extension identity, MCP identity, and tunnel configuration are all dedicated to this project.
 
+## PDF reader boundary
+
+The main process owns native file selection and reads one bounded file snapshot from an open file handle. It verifies the file is regular, unchanged during the read, contains a PDF header, and is at most 128 MB. The renderer receives the PDF bytes plus metadata and a stable content-derived document ID; it never receives the native file path.
+
+The renderer uses PDF.js for continuous reading. Page canvases and text layers are rendered lazily around the viewport, in-flight renders are invalidated by generation on zoom/resize/navigation changes, and offscreen backing canvases/text DOM are released. Search extracts text page-by-page with a bounded cache, and outline/thumbnails are loaded independently.

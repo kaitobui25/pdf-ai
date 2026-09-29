@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { dialog, ipcMain } from 'electron';
 import {
   APP_ID,
   APP_NAME,
@@ -7,6 +7,8 @@ import {
   MCP_CONNECTOR_NAME
 } from '../shared/constants.js';
 import type { RuntimeInfo } from '../shared/api.js';
+import type { PdfOpenResult } from '../shared/pdf.js';
+import { loadPdfSnapshot, pdfOpenError } from './pdf-file.js';
 
 export function registerIpc(): void {
   ipcMain.handle('runtime:info', (): RuntimeInfo => ({
@@ -16,5 +18,20 @@ export function registerIpc(): void {
     bridgePorts: BRIDGE_PORTS,
     mcpConnectorName: MCP_CONNECTOR_NAME
   }));
+  ipcMain.handle('pdf:open', async (): Promise<PdfOpenResult> => {
+    const selection = await dialog.showOpenDialog({
+      title: 'Open PDF',
+      properties: ['openFile'],
+      filters: [{ name: 'PDF documents', extensions: ['pdf'] }]
+    });
+    const filePath = selection.filePaths[0];
+    if (selection.canceled || !filePath) {
+      return { ok: false, error: { code: 'cancelled', message: 'No PDF selected.' } };
+    }
+    try {
+      return { ok: true, document: await loadPdfSnapshot(filePath) };
+    } catch (error) {
+      return { ok: false, error: pdfOpenError(error) };
+    }
+  });
 }
-

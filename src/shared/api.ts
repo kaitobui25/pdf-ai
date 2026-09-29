@@ -1,3 +1,5 @@
+import type { PdfOpenResult } from './pdf.js';
+
 export interface RuntimeInfo {
   appName: string;
   appId: string;
@@ -8,5 +10,5 @@ export interface RuntimeInfo {
 
 export interface PdfAiApi {
   runtimeInfo(): Promise<RuntimeInfo>;
+  openPdf(): Promise<PdfOpenResult>;
 }
-
