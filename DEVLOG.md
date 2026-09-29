@@ -164,7 +164,7 @@ PDF-AI-specific MCP work:
 - Tool schemas accept only document IDs, pages, search text, render scale and normalized regions. No arbitrary filesystem path is exposed.
 - Engine errors are returned as explicit tool-level errors with stable error codes.
 - Render tools return document/page/reference metadata plus a PNG MCP image content block.
-- The Electron main process starts the MCP endpoint with the shared PdfDocumentEngine and logs the local endpoint for tunnel setup.
+- The Electron main process starts the MCP endpoint with the shared PdfDocumentEngine. Phase 3 originally logged the full local endpoint for manual tunnel setup; Phase 4.1 removes that secret-path log because the app now hands the endpoint directly to its owned tunnel process.
 
 Intentionally omitted in this phase:
 
@@ -181,7 +181,7 @@ Validation:
 - MCP client SDK successfully connects over real loopback HTTP, discovers exactly seven tools and calls list/current/selection/search/read/render page/render region.
 - Tests cover invalid document IDs/pages, schema/query/page-range bounds, concurrent calls and multiple PDFs.
 - npm run build: pass.
-- npm run dev: Electron starts and prints a loopback PDF AI MCP endpoint, then remains running until stopped.
+- npm run dev: Electron starts the loopback PDF AI MCP endpoint and remains running until stopped. The full secret URL is no longer logged after Phase 4.1.
 
 ## Phase 4 — Browser bridge and MV3 extension foundation
 
@@ -240,4 +240,71 @@ Validation:
 - npm run build: pass.
 - node --check passes for all extension JavaScript and the manifest parses.
 - Extension scan finds no CoS bridge ports, ChatGPT references or content_scripts declaration.
-- npm run dev: Electron starts both the secret local MCP endpoint and browser bridge on 127.0.0.1:8875, then remains running until stopped.
+- npm run dev: Electron starts the local MCP endpoint and browser bridge on 127.0.0.1:8875, then remains running until stopped. Phase 4.1 later removes secret-path logging.
+
+## Phase 4.1 — User-friendly tunnel setup and lifecycle
+
+Inspected/reused the Phase-4.1 CoS patterns from:
+
+- scripts/fetch-tunnel-client.mjs
+- scripts/packaging-versions.mjs
+- src/main/tunnel/index.ts
+- src/main/tunnel/health.ts
+- src/main/tunnel/locate.ts
+- src/main/secrets.ts
+- src/main/connection.ts
+- src/main/ipc.ts
+- src/preload/index.ts
+- src/renderer/main.ts
+- src/renderer/index.html
+- test/tunnel-lifecycle.test.ts
+- test/tunnel.test.ts
+- test/tunnel-locate.test.ts
+- focused secret/setup/connection tests
+
+Patterns reused or simplified:
+
+- Main process owns one supervised OpenAI tunnel child; renderer only sends setup drafts and reads a safe state projection.
+- Pin the tested OpenAI tunnel-client release and verify SHA-256 before making a runtime executable available.
+- Keep the control-plane API key and fresh secret MCP URL out of argv and send them only through environment-backed tunnel-client configuration.
+- Treat `/readyz` as local readiness rather than proof of Internet/control-plane reachability; use control-plane poll metrics for the connected/offline distinction.
+- Do not respawn a locally healthy tunnel merely because the network is temporarily down; let tunnel-client perform its own poll retry. Replace only an exited or persistently unready child.
+- Fence each run by connection generation so output/exit/health from a retired child cannot change the current connection.
+- Require a second failed local readiness pass before replacing the child, and wait for owned-process retirement before launching its replacement.
+- Treat only genuine control-plane 401/403 evidence as terminal authentication failure; local MCP probe 401/403 text is not credential evidence.
+- Store credentials with Electron/OS secure storage and never return them to the renderer.
+
+PDF-AI-specific Phase-4.1 work:
+
+- Added a dedicated connection card in the right pane with Tunnel ID, write-only restricted API key, Connect/Disconnect, connection state, runtime version and safe diagnostics.
+- Normal users no longer install or start tunnel-client manually. Connect lazily prepares the runtime so an offline/missing runtime never blocks PDF reading or app startup.
+- Pinned OpenAI tunnel-client v0.0.15 for Windows x64/arm64 using the CoS-vetted release SHA-256 values. Runtime archives are downloaded only from the pinned OpenAI GitHub release, checked before extraction, cached under PDF-AI userData and revalidated before reuse.
+- Normal runtime resolution ignores PATH. `PDF_AI_TUNNEL_CLIENT_PATH` is an explicit development/recovery override and an invalid selection fails closed.
+- Windows archive extraction calls `%SystemRoot%\\System32\\tar.exe` directly instead of resolving an extractor from PATH.
+- Tunnel ID is stored in PDF-AI config. The restricted API key is encrypted with Electron safeStorage when available; otherwise a newly entered key is process-memory-only.
+- The child environment is scrubbed case-insensitively for stale tunnel credential/MCP variables before inserting PDF-AI's current values.
+- On every Connect, the manager uses the current app process's MCP URL, so the random port/secret-path change after restart requires no user profile edit.
+- The main-process log now exposes only the MCP loopback port, not the secret MCP route.
+- App quit now awaits tunnel, bridge, MCP and document-engine cleanup before allowing Electron to exit.
+
+Intentionally omitted in this phase:
+
+- Installer/NSIS/updater/signing/release artifacts and cross-platform distribution work.
+- Cloudflare/manual tunnel providers, multiple connector profiles, Core/Desktop/Plugins surfaces, tunnel packaging into a shipped EXE, and release-current verification machinery.
+- ChatGPT tab/DOM automation; that remains Phase 5 and still requires the mandatory user checkpoint.
+
+Isolation:
+
+- Runtime cache, tunnel config and encrypted credential file live only under PDF-AI userData names.
+- PDF-AI never reads CoS tunnel IDs, credentials, runtime cache, binaries or userData.
+- Browser bridge remains a separate loopback service on 8875–8879 and is never routed through the MCP tunnel.
+
+Validation:
+
+- npm run typecheck: pass.
+- npm test: pass, 13 files / 61 tests.
+- Tunnel runtime tests cover exact pin/checksums, reject-before-extract on bad checksum, verified-cache revalidation/tamper recovery and explicit-override fail-closed behavior.
+- Tunnel health tests cover labelled metrics, main-channel status, control-plane-only auth classification and network classification.
+- Tunnel lifecycle tests cover secret-free argv/status, scrubbed environment, exact current MCP URL, unexpected-exit reconnect, persistent-unready replacement with retirement barrier, stale-child rejection, terminal auth failure and Disconnect cancellation.
+- npm run build: pass.
+- npm run dev: PASS. Electron opened a `PDF-AI` window, logged only `PDF AI MCP: listening on 127.0.0.1:63480` plus `PDF-AI browser bridge: http://127.0.0.1:8875`, and `/hello` reported `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1. No PDF-AI tunnel runtime was downloaded on startup; the already-running Chat On Steroids tunnel-client remained separate and untouched. Ctrl-C stopped the PDF-AI window and bridge cleanly.

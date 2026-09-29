@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { PdfAiApi, RuntimeInfo } from '../shared/api.js';
 import type { PdfOpenResult, PdfSelectionUpdate } from '../shared/pdf.js';
+import type { TunnelConnectInput, TunnelConnectionStatus } from '../shared/tunnel.js';
 
 const api: PdfAiApi = {
   runtimeInfo: () => ipcRenderer.invoke('runtime:info') as Promise<RuntimeInfo>,
@@ -18,7 +19,11 @@ const api: PdfAiApi = {
     viewEpoch,
     seq,
     selection
-  ) as Promise<boolean>
+  ) as Promise<boolean>,
+  tunnelStatus: () => ipcRenderer.invoke('tunnel:status') as Promise<TunnelConnectionStatus>,
+  tunnelConnect: (input: TunnelConnectInput) =>
+    ipcRenderer.invoke('tunnel:connect', input) as Promise<TunnelConnectionStatus>,
+  tunnelDisconnect: () => ipcRenderer.invoke('tunnel:disconnect') as Promise<TunnelConnectionStatus>
 };
 
 contextBridge.exposeInMainWorld('pdfAi', api);

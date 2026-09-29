@@ -3,6 +3,9 @@ import { app, BrowserWindow } from 'electron';
 import {
   APP_NAME,
   BRIDGE_STATE_FILE,
+  CONFIG_FILE,
+  SECRETS_FILE,
+  TUNNEL_RUNTIME_FOLDER,
   USER_DATA_FOLDER
 } from '../shared/constants.js';
 import { registerIpc } from './ipc.js';
@@ -13,6 +16,10 @@ import {
   startBrowserBridge,
   type BrowserBridge
 } from './bridge.js';
+import { JsonTunnelConfigStore } from './tunnel-config.js';
+import { ElectronTunnelCredentialStore } from './tunnel-credential.js';
+import { TunnelManager } from './tunnel-manager.js';
+import { TunnelRuntimeProvider } from './tunnel-runtime.js';
 
 app.setName(APP_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
@@ -21,6 +28,9 @@ let mainWindow: BrowserWindow | null = null;
 const documentEngine = new PdfDocumentEngine();
 let mcpEndpoint: PdfMcpEndpoint | null = null;
 let browserBridge: BrowserBridge | null = null;
+let tunnelManager: TunnelManager | null = null;
+let shutdownStarted = false;
+let shutdownComplete = false;
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -69,12 +79,20 @@ if (!hasSingleInstanceLock) {
   });
 
   void app.whenReady().then(async () => {
-    registerIpc(documentEngine);
     mcpEndpoint = await startPdfMcpServer(documentEngine);
-    browserBridge = await startBrowserBridge(
-      new JsonBridgeStateStore(path.join(app.getPath('userData'), BRIDGE_STATE_FILE))
+    const userData = app.getPath('userData');
+    tunnelManager = new TunnelManager(
+      mcpEndpoint.url,
+      new JsonTunnelConfigStore(path.join(userData, CONFIG_FILE)),
+      new ElectronTunnelCredentialStore(path.join(userData, SECRETS_FILE)),
+      new TunnelRuntimeProvider(path.join(userData, TUNNEL_RUNTIME_FOLDER))
     );
-    console.info('PDF AI MCP:', mcpEndpoint.url);
+    await tunnelManager.initialize();
+    registerIpc(documentEngine, tunnelManager);
+    browserBridge = await startBrowserBridge(
+      new JsonBridgeStateStore(path.join(userData, BRIDGE_STATE_FILE))
+    );
+    console.info('PDF AI MCP: listening on 127.0.0.1:' + mcpEndpoint.port);
     console.info('PDF-AI browser bridge:', browserBridge.url);
     createWindow();
   }).catch(error => {
@@ -90,11 +108,19 @@ if (!hasSingleInstanceLock) {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  app.on('will-quit', () => {
+  app.on('before-quit', event => {
+    if (shutdownComplete) return;
+    event.preventDefault();
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     void Promise.all([
+      tunnelManager?.stop() ?? Promise.resolve(),
       browserBridge?.stop() ?? Promise.resolve(),
       mcpEndpoint?.stop() ?? Promise.resolve(),
       documentEngine.destroy()
-    ]);
+    ]).finally(() => {
+      shutdownComplete = true;
+      app.quit();
+    });
   });
 }

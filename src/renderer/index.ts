@@ -1,5 +1,7 @@
 import './styles.css';
+import type { TunnelConnectionStatus } from '../shared/tunnel.js';
 import { PdfReader } from './pdf-reader.js';
+import { tunnelViewState } from './tunnel-ui.js';
 
 const root = document.querySelector<HTMLElement>('#app');
 if (!root) throw new Error('Missing app root');
@@ -45,7 +47,24 @@ root.innerHTML =
     '</section>' +
     '<aside class="chat-pane">' +
       '<header class="pane-header"><strong>AI Chat</strong><span id="runtime-status">Starting…</span></header>' +
-      '<div class="empty-state"><div><p>Reader phases are active. ChatGPT automation is intentionally disabled until the later roadmap phases.</p></div></div>' +
+      '<div class="chat-content">' +
+        '<section class="connection-card" aria-labelledby="connection-title">' +
+          '<div class="connection-heading">' +
+            '<div><strong id="connection-title">PDF AI connection</strong><p>OpenAI Secure MCP Tunnel</p></div>' +
+            '<span id="tunnel-state" class="connection-state" data-state="disconnected">Not connected</span>' +
+          '</div>' +
+          '<label class="connection-field"><span>Tunnel ID</span><input id="tunnel-id" type="text" autocomplete="off" spellcheck="false" placeholder="tunnel_…"></label>' +
+          '<label class="connection-field"><span>Restricted API key</span><input id="tunnel-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter key"></label>' +
+          '<p id="credential-hint" class="connection-hint">The key never leaves the Electron main process except as tunnel-client environment data.</p>' +
+          '<div class="connection-actions">' +
+            '<button id="tunnel-connect" type="button" class="primary">Connect</button>' +
+            '<button id="tunnel-disconnect" type="button" hidden>Disconnect</button>' +
+          '</div>' +
+          '<p id="tunnel-detail" class="connection-detail">Loading connection state…</p>' +
+          '<p id="tunnel-runtime" class="connection-diagnostic"></p>' +
+        '</section>' +
+        '<div class="phase-note"><p>ChatGPT browser automation remains disabled until Phase 5. Phase 4.1 only owns the secure MCP connection.</p></div>' +
+      '</div>' +
     '</aside>' +
   '</div>';
 
@@ -66,10 +85,21 @@ const status = required<HTMLElement>('#reader-status');
 const selectionStatus = required<HTMLElement>('#selection-status');
 const empty = required<HTMLElement>('#reader-empty');
 const searchInput = required<HTMLInputElement>('#pdf-search');
+const tunnelIdInput = required<HTMLInputElement>('#tunnel-id');
+const tunnelKeyInput = required<HTMLInputElement>('#tunnel-key');
+const tunnelConnectButton = required<HTMLButtonElement>('#tunnel-connect');
+const tunnelDisconnectButton = required<HTMLButtonElement>('#tunnel-disconnect');
+const tunnelState = required<HTMLElement>('#tunnel-state');
+const tunnelDetail = required<HTMLElement>('#tunnel-detail');
+const tunnelRuntime = required<HTMLElement>('#tunnel-runtime');
+const credentialHint = required<HTMLElement>('#credential-hint');
 let searchRequest = 0;
 let openRequest = 0;
 let pageStateSeq = 0;
 let selectionStateSeq = 0;
+let tunnelSetupInitialized = false;
+let tunnelActionBusy = false;
+let tunnelPollBusy = false;
 
 const reader = new PdfReader(
   { viewport, pages, outline, thumbnails },
@@ -227,9 +257,93 @@ searchInput.addEventListener('keydown', event => {
   if (event.key === 'Enter') void runSearch();
 });
 
+const renderTunnelStatus = (next: TunnelConnectionStatus): void => {
+  if (!tunnelSetupInitialized) {
+    tunnelIdInput.value = next.tunnelId;
+    tunnelSetupInitialized = true;
+  }
+  const view = tunnelViewState(next.state);
+  tunnelState.textContent = view.label;
+  tunnelState.dataset.state = next.state;
+  tunnelDetail.textContent = next.detail;
+  tunnelDetail.classList.toggle('is-error', view.error);
+  tunnelConnectButton.hidden = view.running;
+  tunnelDisconnectButton.hidden = !view.running;
+  tunnelConnectButton.disabled = tunnelActionBusy;
+  tunnelDisconnectButton.disabled = tunnelActionBusy || next.state === 'disconnecting';
+  tunnelIdInput.disabled = view.running || tunnelActionBusy;
+  tunnelKeyInput.disabled = view.running || tunnelActionBusy;
+  tunnelKeyInput.placeholder = next.hasCredential ? 'Stored securely — leave blank to reuse' : 'Enter restricted API key';
+  credentialHint.textContent = next.secureStorageAvailable
+    ? 'Credential storage: protected by the operating system. The key is never returned to this page.'
+    : (next.secureStorageDetail ?? 'Secure storage unavailable; a newly entered key is kept in memory only.');
+  tunnelRuntime.textContent = next.runtimeVersion
+    ? `Tunnel runtime ${next.runtimeVersion}${next.retryInMs === null ? '' : ` · retry in ${Math.ceil(next.retryInMs / 1000)}s`}`
+    : (next.retryInMs === null ? '' : `Retry in ${Math.ceil(next.retryInMs / 1000)}s`);
+};
+
+const refreshTunnelStatus = async (): Promise<void> => {
+  if (tunnelPollBusy) return;
+  tunnelPollBusy = true;
+  try {
+    renderTunnelStatus(await window.pdfAi.tunnelStatus());
+  } catch (error) {
+    tunnelDetail.textContent = error instanceof Error ? error.message : 'Could not read tunnel status.';
+    tunnelDetail.classList.add('is-error');
+  } finally {
+    tunnelPollBusy = false;
+  }
+};
+
+tunnelConnectButton.addEventListener('click', async () => {
+  if (tunnelActionBusy) return;
+  tunnelActionBusy = true;
+  const submittedKey = tunnelKeyInput.value;
+  tunnelConnectButton.disabled = true;
+  try {
+    const next = await window.pdfAi.tunnelConnect({
+      tunnelId: tunnelIdInput.value.trim(),
+      ...(submittedKey ? { apiKey: submittedKey } : {})
+    });
+    if (tunnelKeyInput.value === submittedKey) tunnelKeyInput.value = '';
+    renderTunnelStatus(next);
+  } catch (error) {
+    tunnelDetail.textContent = error instanceof Error ? error.message : 'Could not start the tunnel.';
+    tunnelDetail.classList.add('is-error');
+  } finally {
+    tunnelActionBusy = false;
+    void refreshTunnelStatus();
+  }
+});
+
+tunnelDisconnectButton.addEventListener('click', async () => {
+  if (tunnelActionBusy) return;
+  tunnelActionBusy = true;
+  tunnelDisconnectButton.disabled = true;
+  try {
+    renderTunnelStatus(await window.pdfAi.tunnelDisconnect());
+  } catch (error) {
+    tunnelDetail.textContent = error instanceof Error ? error.message : 'Could not disconnect the tunnel.';
+    tunnelDetail.classList.add('is-error');
+  } finally {
+    tunnelActionBusy = false;
+    void refreshTunnelStatus();
+  }
+});
+
+tunnelKeyInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') tunnelConnectButton.click();
+});
+
 void window.pdfAi.runtimeInfo().then(info => {
   const runtime = required<HTMLElement>('#runtime-status');
   runtime.textContent = info.bridgeId + ' · MCP ' + info.mcpConnectorName;
 });
 
-window.addEventListener('beforeunload', () => reader.destroy(), { once: true });
+void refreshTunnelStatus();
+const tunnelPollTimer = window.setInterval(() => void refreshTunnelStatus(), 1_000);
+
+window.addEventListener('beforeunload', () => {
+  window.clearInterval(tunnelPollTimer);
+  reader.destroy();
+}, { once: true });

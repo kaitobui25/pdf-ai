@@ -8,6 +8,7 @@ import {
   MCP_CONNECTOR_NAME,
   SECRETS_FILE,
   SESSIONS_FOLDER,
+  TUNNEL_RUNTIME_FOLDER,
   USER_DATA_FOLDER
 } from '../src/shared/constants.js';
 
@@ -21,6 +22,8 @@ describe('PDF-AI isolation', () => {
     expect(SECRETS_FILE).toMatch(/^pdf-ai\./);
     expect(SESSIONS_FOLDER).toMatch(/^pdf-ai-/);
     expect(BRIDGE_STATE_FILE).toMatch(/^pdf-ai\./);
+    expect(TUNNEL_RUNTIME_FOLDER).toMatch(/^pdf-ai-/);
+    expect(TUNNEL_RUNTIME_FOLDER.toLowerCase()).not.toContain('chat-on-steroids');
   });
 
   it('only uses the dedicated bridge port range', () => {

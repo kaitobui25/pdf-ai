@@ -5,6 +5,7 @@ export const CONFIG_FILE = 'pdf-ai.config.json' as const;
 export const SECRETS_FILE = 'pdf-ai.secrets.json' as const;
 export const SESSIONS_FOLDER = 'pdf-ai-sessions' as const;
 export const BRIDGE_STATE_FILE = 'pdf-ai.bridge-state.json' as const;
+export const TUNNEL_RUNTIME_FOLDER = 'pdf-ai-tunnel-runtime' as const;
 
 export const BRIDGE_ID = 'pdf-ai' as const;
 export const BRIDGE_PROTOCOL = 1 as const;

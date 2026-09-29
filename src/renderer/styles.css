@@ -64,6 +64,8 @@ button.primary {
 .chat-pane {
   min-width: 0;
   min-height: 0;
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
 }
 
 .reader-toolbar,
@@ -337,19 +339,103 @@ button.primary {
   white-space: nowrap;
 }
 
-.empty-state {
-  height: calc(100% - 48px);
-  display: grid;
-  place-content: center;
-  padding: 32px;
-  text-align: center;
-  color: #9d9d9d;
+.chat-content {
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
 }
 
-.empty-state p {
-  max-width: 460px;
+.connection-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #343434;
+  border-radius: 10px;
+  background: #1c1c1c;
+}
+
+.connection-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.connection-heading p,
+.connection-hint,
+.connection-detail,
+.connection-diagnostic,
+.phase-note p {
   margin: 0;
-  line-height: 1.6;
+  color: #929292;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.connection-heading p {
+  margin-top: 3px;
+}
+
+.connection-state {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid #414141;
+  border-radius: 999px;
+  color: #b5b5b5;
+  font-size: 11px;
+}
+
+.connection-state[data-state='connected'] {
+  border-color: #54745d;
+  color: #9ed7ac;
+}
+
+.connection-state[data-state='offline'],
+.connection-state[data-state='auth-failed'],
+.connection-state[data-state='tunnel-unavailable'] {
+  border-color: #735050;
+  color: #e6a2a2;
+}
+
+.connection-field {
+  display: grid;
+  gap: 6px;
+  color: #bdbdbd;
+  font-size: 12px;
+}
+
+.connection-field input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background: #151515;
+  color: #f1f1f1;
+}
+
+.connection-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.connection-actions button {
+  min-width: 94px;
+  height: 32px;
+  padding: 0 12px;
+}
+
+.connection-detail.is-error {
+  color: #ff9c9c;
+}
+
+.connection-diagnostic:empty {
+  display: none;
+}
+
+.phase-note {
+  margin-top: 18px;
+  padding: 0 4px;
 }
 
 @media (max-width: 1120px) {
@@ -363,4 +449,3 @@ button.primary {
     width: 130px;
   }
 }
-

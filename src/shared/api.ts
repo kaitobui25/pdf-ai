@@ -1,4 +1,5 @@
 import type { PdfOpenResult, PdfSelectionUpdate } from './pdf.js';
+import type { TunnelConnectInput, TunnelConnectionStatus } from './tunnel.js';
 
 export interface RuntimeInfo {
   appName: string;
@@ -18,4 +19,7 @@ export interface PdfAiApi {
     seq: number,
     selection: PdfSelectionUpdate | null
   ): Promise<boolean>;
+  tunnelStatus(): Promise<TunnelConnectionStatus>;
+  tunnelConnect(input: TunnelConnectInput): Promise<TunnelConnectionStatus>;
+  tunnelDisconnect(): Promise<TunnelConnectionStatus>;
 }

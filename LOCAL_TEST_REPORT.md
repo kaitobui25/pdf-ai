@@ -51,7 +51,7 @@ Visual interaction with the native Open dialog was not automated because the con
   - Query length and 50-page read bounds are enforced PASS.
   - Concurrent calls across two PDFs remain isolated PASS.
 - npm run build — PASS.
-- npm run dev — PASS: Electron started and logged a secret loopback PDF AI MCP URL.
+- npm run dev — PASS: Electron started the secret loopback PDF AI MCP endpoint. Phase 4.1 later removed the secret path from logging.
 
 ## Phase 4
 
@@ -73,4 +73,26 @@ Visual interaction with the native Open dialog was not automated because the con
 - node --check extension/bridge-client.js, extension/background.js and extension/popup.js — PASS.
 - extension/manifest.json parse — PASS; content_scripts absent.
 - Extension forbidden-reference scan — PASS; no 8765–8769 or ChatGPT references.
-- npm run dev — PASS: Electron logged both a secret loopback PDF AI MCP URL and PDF-AI browser bridge at 127.0.0.1:8875.
+- npm run dev — PASS: Electron started both local services. Phase 4.1 later changed the MCP log to expose only its loopback port.
+
+## Phase 4.1
+
+- npm run typecheck — PASS.
+- npm test — PASS, 13 test files / 61 tests.
+  - Pinned tunnel-client v0.0.15 Windows x64/arm64 metadata and CoS-vetted SHA-256 values PASS.
+  - Checksum mismatch is rejected before extraction/runtime publication PASS.
+  - Verified runtime cache is revalidated; executable tampering forces a fresh verified prepare PASS.
+  - Explicit invalid runtime override fails closed without PATH fallback PASS.
+  - Tunnel health metrics/status parsing PASS.
+  - Local MCP 401/403 text is not misclassified as an OpenAI credential failure; genuine control-plane 401/403 is terminal PASS.
+  - API key and private MCP URL are absent from argv and renderer-safe status; exact current values exist only in the scrubbed child environment PASS.
+  - Case-insensitive inherited CONTROL_PLANE_API_KEY/MCP_SERVER_URL/MCP_DISCOVERY_EXTRA_HEADERS values are removed before spawn PASS.
+  - Unexpected child exit reconnects with bounded backoff and stale retired-child output cannot overwrite current state PASS.
+  - Persistent local unready requires two failed passes and replacement waits for the old child retirement barrier PASS.
+  - Auth rejection stops reconnect; Disconnect cancels later respawn PASS.
+  - A new app lifecycle automatically supplies its new random MCP URL without user tunnel-profile edits PASS.
+  - Dedicated PDF-AI tunnel runtime namespace isolation PASS.
+- npm run build — PASS for main, preload and renderer.
+- Secret regression scan — PASS: application source contains no console statement that logs the full MCP URL; tunnel key/MCP URL identifiers occur only at the intended main-process environment boundary.
+- git diff --check — PASS (line-ending notices only).
+- npm run dev — PASS: Electron opened a `PDF-AI` window. Startup output was `PDF AI MCP: listening on 127.0.0.1:63480` and `PDF-AI browser bridge: http://127.0.0.1:8875`; no MCP secret path was printed. `GET /hello` returned `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1. The PDF-AI tunnel runtime directory did not exist after startup, proving startup did not prepare/download the runtime. An already-running Chat On Steroids tunnel-client at `C:\\Program Files\\Chat On Steroids\\resources\\tunnel\\tunnel-client.exe` remained running and untouched. Ctrl-C stopped the PDF-AI window and bridge cleanly.

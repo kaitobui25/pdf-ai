@@ -8,10 +8,18 @@ import {
 } from '../shared/constants.js';
 import type { RuntimeInfo } from '../shared/api.js';
 import type { PdfOpenResult, PdfSelectionUpdate } from '../shared/pdf.js';
+import type { TunnelConnectInput, TunnelConnectionStatus } from '../shared/tunnel.js';
+import { z } from 'zod';
 import { PdfDocumentEngine } from './pdf-document-engine.js';
 import { pdfOpenError } from './pdf-file.js';
+import { TunnelManager } from './tunnel-manager.js';
 
-export function registerIpc(engine: PdfDocumentEngine): void {
+const tunnelConnectSchema = z.object({
+  tunnelId: z.string().min(1).max(80),
+  apiKey: z.string().max(512).optional()
+}).strict();
+
+export function registerIpc(engine: PdfDocumentEngine, tunnelManager: TunnelManager): void {
   ipcMain.handle('runtime:info', (): RuntimeInfo => ({
     appName: APP_NAME,
     appId: APP_ID,
@@ -53,4 +61,10 @@ export function registerIpc(engine: PdfDocumentEngine): void {
       return engine.setSelection(documentId, viewEpoch, seq, selection);
     }
   );
+  ipcMain.handle('tunnel:status', (): Promise<TunnelConnectionStatus> => tunnelManager.getStatus());
+  ipcMain.handle('tunnel:connect', (_event, input: unknown): Promise<TunnelConnectionStatus> => {
+    const parsed = tunnelConnectSchema.parse(input) as TunnelConnectInput;
+    return tunnelManager.connect(parsed);
+  });
+  ipcMain.handle('tunnel:disconnect', (): Promise<TunnelConnectionStatus> => tunnelManager.disconnect());
 }
