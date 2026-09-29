@@ -113,3 +113,20 @@ Visual interaction with the native Open dialog was not automated because the con
 - extension manifest parse and Phase-5 content-script permissions — PASS.
 - git diff --check — PASS (line-ending notices only).
 - npm run dev — PASS: Electron opened the `PDF-AI` window; startup logged `PDF AI MCP: listening on 127.0.0.1:63913` and `PDF-AI browser bridge: http://127.0.0.1:8875`; bridge `/hello` returned the expected PDF-AI identity/protocol; the pre-existing Chat On Steroids tunnel-client remained untouched; Ctrl-C stopped PDF-AI cleanly.
+
+## Phase 6
+
+- npm run typecheck — PASS.
+- npm test — PASS, 16 test files / 73 tests.
+  - Final assistant state is monotonic across stale distinct-event replays PASS.
+  - A completed input rejects a second assistant message identity PASS.
+  - Conflicting turn/request evidence fails closed PASS.
+  - One conversation cannot bind to two PDF sessions PASS.
+  - Send authorization persists before the irreversible browser click PASS.
+  - Input failure after authorization is rejected; ambiguous post-authorization delivery becomes `uncertain` and stays pending PASS.
+  - Pre-authorization cancellation queues an exact owned cancel and clears only after its durable event PASS.
+  - Restart/redelivery of an already authorized input resumes observation and produces no second `pdf-ai:send` PASS.
+- npm run build — PASS.
+- extension automation/background/content syntax — PASS.
+- git diff --check — PASS.
+- npm run dev — PASS: Electron opened the `PDF-AI` window; startup logged only MCP loopback port `56396` plus bridge `8875`; `/hello` returned the expected PDF-AI identity/protocol; Ctrl-C stopped the app cleanly.

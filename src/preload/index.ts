@@ -28,7 +28,9 @@ const api: PdfAiApi = {
   chatSession: (documentId: string) =>
     ipcRenderer.invoke('chat:session', documentId) as Promise<ChatSessionSnapshot | null>,
   chatSend: (input: ChatSendInput) =>
-    ipcRenderer.invoke('chat:send', input) as Promise<ChatSessionSnapshot>
+    ipcRenderer.invoke('chat:send', input) as Promise<ChatSessionSnapshot>,
+  chatCancel: (documentId: string) =>
+    ipcRenderer.invoke('chat:cancel', documentId) as Promise<ChatSessionSnapshot>
 };
 
 contextBridge.exposeInMainWorld('pdfAi', api);

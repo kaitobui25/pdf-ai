@@ -333,3 +333,29 @@ Validation before Phase-5 smoke/commit:
 - extension manifest parse/required ChatGPT content-script permissions: pass.
 - `git diff --check`: pass.
 - `npm run dev`: pass. Electron opened the `PDF-AI` window, MCP logged only loopback port `63913`, browser bridge `/hello` identified `pdf-ai` protocol 1 on port 8875, and the unrelated Chat On Steroids tunnel-client process remained untouched. Ctrl-C stopped PDF-AI cleanly.
+
+## Phase 6 — Durable ownership and response correlation
+
+Reused the CoS first-proof-wins/monotonic-final invariants while omitting the larger Goal/Loop request-correlation machinery that PDF-AI does not need.
+
+Implemented:
+
+- Added durable local sequence/origin metadata for chat messages so canonical revisions are ordered by local state, not timestamps.
+- Enforced one durable ChatGPT conversation owner across all PDF sessions; contradictory cross-PDF binding fails closed.
+- Added turn/request correlation conflict checks and one canonical assistant identity per completed input.
+- Made assistant finality monotonic: stale streaming events cannot regress a final message, even with a fresh transport event ID.
+- Added a durable send-authorization boundary immediately before the native browser click. Restart/redelivery after authorization never dispatches Send again.
+- Added `uncertain` delivery state for lost/ambiguous post-authorization receipts; the pending input remains owned and can later settle from exact recovered evidence.
+- Recovery from an ownership marker republishes the native user-message receipt before assistant observation resumes.
+- Added cancellation protocol; cancellation succeeds only before authorization and otherwise fails closed.
+- Added durable bounded event metadata plus attachment identity/upload state to the local session record.
+
+Validation before smoke/commit:
+
+- `npm run typecheck`: pass.
+- `npm test`: pass, 16 files / 73 tests.
+- Phase-6 adversarial tests cover final→stale streaming, second assistant after completion, turn conflict, cross-PDF conversation claim, authorize→failure/uncertain, safe pre-authorize cancel, and restart/redelivery after authorization with no second Send.
+- `npm run build`: pass.
+- extension syntax checks: pass.
+- `git diff --check`: pass.
+- `npm run dev`: pass. Electron opened the `PDF-AI` window, MCP logged only loopback port `56396`, browser bridge `/hello` identified `pdf-ai` protocol 1 on port 8875, and Ctrl-C stopped the app cleanly.

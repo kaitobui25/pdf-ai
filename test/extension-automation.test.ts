@@ -219,4 +219,63 @@ describe('PDF-AI ChatGPT ownership automation', () => {
     expect(current).toMatchObject({ ok: true });
     expect(chunks).toHaveLength(1);
   });
+
+  it('persists send authorization and never re-dispatches the same input after restart/redelivery', async () => {
+    const storage = new MemoryStorage();
+    const sessionId = randomUUID();
+    const inputId = randomUUID();
+    const documentId = 'pdf-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const conversationId = '55555555-abcd-4abc-8abc-1234567890ab';
+    const posted: Array<Array<Record<string, unknown>>> = [];
+    const sent: string[] = [];
+    const bridgeClient = {
+      postEvents: async (events: Array<Record<string, unknown>>) => {
+        posted.push(events);
+        return { ok: true, data: { receipts: events.map(row => ({ eventId: row.eventId, status: 'ok' })) } };
+      },
+      getDocumentChunk: async () => ({ ok: false, error: 'unused' })
+    };
+    const chromeApi = {
+      runtime: {},
+      tabs: {
+        get: async () => ({ id: 9, url: `https://chatgpt.com/c/${conversationId}` }),
+        query: async () => [],
+        create: async () => { throw new Error('not used'); },
+        sendMessage: async (_id: number, message: { type: string }) => { sent.push(message.type); return { ok: true }; }
+      }
+    };
+    storage.values[PDF_AI_OWNED_CHATS_KEY] = {
+      [sessionId]: {
+        sessionId, documentId, conversationId, tabId: 9, tabDocumentId: 'doc-9',
+        documentToken: '11111111-1111-4111-8111-111111111111', pendingInputId: inputId,
+        authorizedInputId: null, commandId: '0123456789abcdef01234567', updatedAt: Date.now()
+      }
+    };
+    const automation = createChatAutomation({ chromeApi, bridgeClient, localStorage: storage });
+    const authorize = await automation.handleRuntimeMessage({
+      type: 'pdf-ai:authorize-send', documentToken: '11111111-1111-4111-8111-111111111111',
+      sessionId, documentId, inputId, conversationId
+    }, {
+      frameId: 0, documentId: 'doc-9', url: `https://chatgpt.com/c/${conversationId}`,
+      tab: { id: 9, url: `https://chatgpt.com/c/${conversationId}` }
+    });
+    expect(authorize).toMatchObject({ ok: true });
+    await automation.drainEvents();
+    expect(storage.values[PDF_AI_OWNED_CHATS_KEY]).toMatchObject({
+      [sessionId]: { authorizedInputId: inputId }
+    });
+    expect(posted.flat().some(row => row.kind === 'send_authorized')).toBe(true);
+
+    const restarted = createChatAutomation({ chromeApi, bridgeClient, localStorage: storage });
+    const replay = await restarted.processCommand({
+      id: '0123456789abcdef01234567', type: 'chat_send',
+      payload: {
+        sessionId, documentId, inputId, conversationId, prompt: 'must not send twice', attachDocument: false,
+        document: { documentId, name: 'paper.pdf', size: 10 }
+      }
+    });
+    expect(replay).toMatchObject({ status: 'ok', error: 'send_already_authorized' });
+    expect(sent).not.toContain('pdf-ai:send');
+    expect(sent).toContain('pdf-ai:resume');
+  });
 });

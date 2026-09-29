@@ -1,6 +1,8 @@
 export type ChatScope = 'selection' | 'page' | 'document' | 'custom';
 
-export type ChatSessionState = 'idle' | 'sending' | 'waiting' | 'complete' | 'error';
+export type ChatSessionState = 'idle' | 'sending' | 'waiting' | 'complete' | 'uncertain' | 'error';
+
+export type ChatPendingState = 'queued' | 'authorized' | 'sent' | 'uncertain';
 
 export interface ChatPageReference {
   documentId: string;
@@ -20,6 +22,8 @@ export interface ChatMessage {
   requestId: string | null;
   final: boolean;
   pageReferences: ChatPageReference[];
+  originSeq: number;
+  revisionSeq: number;
 }
 
 export interface ChatSessionSnapshot {
@@ -28,8 +32,10 @@ export interface ChatSessionSnapshot {
   conversationId: string | null;
   state: ChatSessionState;
   pendingInputId: string | null;
+  pendingState: ChatPendingState | null;
   error: string | null;
   messages: ChatMessage[];
+  nextSeq: number;
   updatedAt: number;
 }
 

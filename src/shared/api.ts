@@ -25,4 +25,5 @@ export interface PdfAiApi {
   tunnelDisconnect(): Promise<TunnelConnectionStatus>;
   chatSession(documentId: string): Promise<ChatSessionSnapshot | null>;
   chatSend(input: ChatSendInput): Promise<ChatSessionSnapshot>;
+  chatCancel(documentId: string): Promise<ChatSessionSnapshot>;
 }

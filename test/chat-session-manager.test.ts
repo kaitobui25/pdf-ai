@@ -195,4 +195,133 @@ describe('PDF-AI chat session manager', () => {
       state: 'sending'
     });
   });
+
+  it('never regresses a final assistant revision and rejects contradictory turn/request evidence', async () => {
+    const directory = await tempDir();
+    const filePath = path.join(directory, 'final.pdf');
+    await writeFile(filePath, await samplePdf('Final evidence'));
+    const documents = engine();
+    const opened = await documents.openFile(filePath);
+    const commands: BridgeCommand[] = [];
+    const manager = new ChatSessionManager(documents, new MemoryChatStateStore(), fakeBridge(commands));
+    const started = await manager.send({ documentId: opened.documentId, text: 'Question', scope: 'document' });
+    const conversationId = '99999999-abcd-4abc-8abc-1234567890ab';
+    const inputId = started.pendingInputId!;
+
+    await manager.acceptBridgeEvents([{
+      eventId: 'sent-final-test', kind: 'input_sent', sessionId: started.sessionId,
+      documentId: opened.documentId, inputId, conversationId, messageId: 'user-final',
+      turnId: 'turn-final', requestId: 'request-final', time: Date.now()
+    }]);
+    await manager.acceptBridgeEvents([{
+      eventId: 'stream-final-test', kind: 'assistant_message', sessionId: started.sessionId,
+      documentId: opened.documentId, inputId, conversationId, messageId: 'assistant-final',
+      turnId: 'turn-final', requestId: 'request-final', text: 'streaming', final: false, time: Date.now()
+    }]);
+    await manager.acceptBridgeEvents([{
+      eventId: 'complete-final-test', kind: 'assistant_message', sessionId: started.sessionId,
+      documentId: opened.documentId, inputId, conversationId, messageId: 'assistant-final',
+      turnId: 'turn-final', requestId: 'request-final', text: 'final answer', final: true, time: Date.now()
+    }]);
+    const completed = await manager.getSession(opened.documentId);
+    const finalMessage = completed?.messages.at(-1);
+    expect(finalMessage).toMatchObject({ text: 'final answer', final: true });
+    expect(finalMessage!.revisionSeq).toBeGreaterThan(finalMessage!.originSeq);
+
+    const stale = await manager.acceptBridgeEvents([{
+      eventId: 'stale-after-final', kind: 'assistant_message', sessionId: started.sessionId,
+      documentId: opened.documentId, inputId, conversationId, messageId: 'assistant-final',
+      turnId: 'turn-final', requestId: 'request-final', text: 'old streaming text', final: false, time: Date.now()
+    }]);
+    expect(stale[0]).toMatchObject({ status: 'ok' });
+    expect((await manager.getSession(opened.documentId))?.messages.at(-1)).toMatchObject({
+      text: 'final answer', final: true
+    });
+
+    const secondAssistant = await manager.acceptBridgeEvents([{
+      eventId: 'different-assistant-after-final', kind: 'assistant_message', sessionId: started.sessionId,
+      documentId: opened.documentId, inputId, conversationId, messageId: 'assistant-other',
+      turnId: 'turn-final', requestId: 'request-final', text: 'wrong second answer', final: true, time: Date.now()
+    }]);
+    expect(secondAssistant[0]).toMatchObject({ status: 'failed', error: 'input_already_complete' });
+
+    const conflict = await manager.acceptBridgeEvents([{
+      eventId: 'turn-conflict-after-final', kind: 'input_sent', sessionId: started.sessionId,
+      documentId: opened.documentId, inputId, conversationId, messageId: 'user-final',
+      turnId: 'different-turn', requestId: 'request-final', time: Date.now()
+    }]);
+    expect(conflict[0]).toMatchObject({ status: 'failed', error: 'turn_correlation_mismatch' });
+  });
+
+  it('keeps authorization irreversible, surfaces uncertainty, and only cancels before authorization', async () => {
+    const directory = await tempDir();
+    const firstPath = path.join(directory, 'authorize.pdf');
+    const secondPath = path.join(directory, 'cancel.pdf');
+    await writeFile(firstPath, await samplePdf('Authorize'));
+    await writeFile(secondPath, await samplePdf('Cancel'));
+    const documents = engine();
+    const first = await documents.openFile(firstPath);
+    const second = await documents.openFile(secondPath);
+    const commands: BridgeCommand[] = [];
+    const manager = new ChatSessionManager(documents, new MemoryChatStateStore(), fakeBridge(commands));
+
+    const authorized = await manager.send({ documentId: first.documentId, text: 'Send once', scope: 'document' });
+    const firstInput = authorized.pendingInputId!;
+    await manager.acceptBridgeEvents([{
+      eventId: 'authorization-event', kind: 'send_authorized', sessionId: authorized.sessionId,
+      documentId: first.documentId, inputId: firstInput, conversationId: null, time: Date.now()
+    }]);
+    expect(await manager.getSession(first.documentId)).toMatchObject({ pendingState: 'authorized', state: 'sending' });
+    await expect(manager.cancel(first.documentId)).rejects.toThrow(/cannot be cancelled safely/i);
+
+    const failedAfterAuthorize = await manager.acceptBridgeEvents([{
+      eventId: 'failure-after-auth', kind: 'input_failed', sessionId: authorized.sessionId,
+      documentId: first.documentId, inputId: firstInput, conversationId: null,
+      error: 'lost worker', time: Date.now()
+    }]);
+    expect(failedAfterAuthorize[0]).toMatchObject({ status: 'failed', error: 'authorized_input_cannot_fail_closed' });
+    await manager.acceptBridgeEvents([{
+      eventId: 'uncertain-after-auth', kind: 'send_uncertain', sessionId: authorized.sessionId,
+      documentId: first.documentId, inputId: firstInput, conversationId: null,
+      error: 'receipt missing', time: Date.now()
+    }]);
+    expect(await manager.getSession(first.documentId)).toMatchObject({
+      state: 'uncertain', pendingState: 'uncertain', pendingInputId: firstInput
+    });
+
+    const cancellable = await manager.send({ documentId: second.documentId, text: 'Cancel me', scope: 'document' });
+    await manager.cancel(second.documentId);
+    expect(commands.at(-1)).toMatchObject({
+      type: 'chat_cancel',
+      payload: { sessionId: cancellable.sessionId, documentId: second.documentId, inputId: cancellable.pendingInputId }
+    });
+    await manager.acceptBridgeEvents([{
+      eventId: 'cancelled-event', kind: 'input_cancelled', sessionId: cancellable.sessionId,
+      documentId: second.documentId, inputId: cancellable.pendingInputId, conversationId: null, time: Date.now()
+    }]);
+    expect(await manager.getSession(second.documentId)).toMatchObject({ state: 'idle', pendingInputId: null });
+  });
+
+  it('refuses to bind one ChatGPT conversation to two PDF sessions', async () => {
+    const directory = await tempDir();
+    const firstPath = path.join(directory, 'owner-a.pdf');
+    const secondPath = path.join(directory, 'owner-b.pdf');
+    await writeFile(firstPath, await samplePdf('Owner A'));
+    await writeFile(secondPath, await samplePdf('Owner B'));
+    const documents = engine();
+    const first = await documents.openFile(firstPath);
+    const second = await documents.openFile(secondPath);
+    const manager = new ChatSessionManager(documents, new MemoryChatStateStore(), fakeBridge([]));
+    const a = await manager.send({ documentId: first.documentId, text: 'A', scope: 'document' });
+    const b = await manager.send({ documentId: second.documentId, text: 'B', scope: 'document' });
+    const conversationId = '77777777-abcd-4abc-8abc-1234567890ab';
+    expect((await manager.acceptBridgeEvents([{
+      eventId: 'bind-owner-a', kind: 'chat_owned', sessionId: a.sessionId, documentId: first.documentId,
+      inputId: a.pendingInputId, conversationId, time: Date.now()
+    }]))[0]).toMatchObject({ status: 'ok' });
+    expect((await manager.acceptBridgeEvents([{
+      eventId: 'bind-owner-b', kind: 'chat_owned', sessionId: b.sessionId, documentId: second.documentId,
+      inputId: b.pendingInputId, conversationId, time: Date.now()
+    }]))[0]).toMatchObject({ status: 'failed', error: 'conversation_already_owned' });
+  });
 });

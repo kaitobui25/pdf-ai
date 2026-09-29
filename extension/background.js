@@ -34,8 +34,10 @@ async function injectContentIntoExistingChats() {
 
 async function processBridgeCommand(command) {
   if (!command || typeof command !== 'object' || typeof command.id !== 'string') return;
-  if (command.type === 'chat_send') {
-    const result = await automation.processCommand(command);
+  if (command.type === 'chat_send' || command.type === 'chat_cancel') {
+    const result = command.type === 'chat_send'
+      ? await automation.processCommand(command)
+      : await automation.cancelCommand(command);
     await client.ackCommand({
       id: command.id,
       status: result.status === 'ok' ? 'ok' : 'failed',

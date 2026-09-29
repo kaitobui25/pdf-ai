@@ -321,6 +321,19 @@
     if (!setComposerText(command.prompt)) return { ok: false, error: 'composer_insert_failed' };
     const button = await waitFor(() => sendEnabled(sendButton()) ? sendButton() : null, 30_000, 100);
     if (!button || compactText(composerText()) !== compactText(command.prompt)) return { ok: false, error: 'send_not_ready' };
+    const authorized = await runtimeMessage({
+      type: 'pdf-ai:authorize-send',
+      documentToken,
+      sessionId: command.sessionId,
+      documentId: command.documentId,
+      inputId: command.inputId,
+      conversationId: conversationId()
+    });
+    if (authorized?.ok !== true) return { ok: false, error: authorized?.error || 'send_authorization_failed' };
+    if (composer() !== box || !box.isConnected || stopButton() || sendButton() !== button || !sendEnabled(button) ||
+        compactText(composerText(box)) !== compactText(command.prompt)) {
+      return { ok: false, error: 'send_state_changed_after_authorization' };
+    }
     try { button.click(); } catch { return { ok: false, error: 'send_click_failed' }; }
 
     const sent = await waitFor(() => exactUserFor(command), 30_000, 100);
@@ -407,6 +420,18 @@
     const user = exactUserFor(command);
     if (!user) return { ok: false, error: 'ownership_marker_not_found' };
     lastPath = location.pathname;
+    const receipt = await runtimeMessage({
+      type: 'pdf-ai:observation',
+      documentToken,
+      sessionId: message.sessionId,
+      event: {
+        ...eventBase(command, 'input_sent', message.conversationId),
+        messageId: user.id,
+        turnId: user.turnId,
+        requestId: user.requestId
+      }
+    });
+    if (receipt?.ok !== true) return { ok: false, error: receipt?.error || 'receipt_recovery_failed' };
     active = { ...command, userMessageId: user.id, userTurnId: user.turnId,
       lastAssistantId: null, lastText: '', lastChangedAt: Date.now(), finalSent: false };
     scheduleScan(0);

@@ -138,6 +138,7 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
             if (binding?.pendingInputId === delivered.inputId) {
               binding.pendingInputId = null;
               binding.commandId = null;
+              binding.authorizedInputId = null;
               binding.updatedAt = now();
             }
           }
@@ -217,9 +218,25 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
   }
 
   async function failCommand(payload, reason) {
-    await queueEvents([eventForFailure(payload, reason, now)]);
+    const binding = owned[payload.sessionId];
+    const authorized = binding?.authorizedInputId === payload.inputId;
+    const event = authorized
+      ? {
+          eventId: crypto.randomUUID(),
+          kind: 'send_uncertain',
+          sessionId: payload.sessionId,
+          documentId: payload.documentId,
+          inputId: payload.inputId,
+          conversationId: binding.conversationId ?? payload.conversationId ?? null,
+          error: String(reason || 'send_state_uncertain').slice(0, 1000),
+          time: now()
+        }
+      : eventForFailure(payload, reason, now);
+    await queueEvents([event]);
     void drainEvents();
-    return { status: 'failed', error: String(reason || 'browser_automation_failed').slice(0, 1000) };
+    return authorized
+      ? { status: 'ok', error: 'send_state_uncertain' }
+      : { status: 'failed', error: String(reason || 'browser_automation_failed').slice(0, 1000) };
   }
 
   async function processCommand(command) {
@@ -241,6 +258,7 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
         conversationId: payload.conversationId ?? null,
         tabId: null,
         pendingInputId: payload.inputId,
+        authorizedInputId: null,
         commandId: command.id,
         updatedAt: now()
       };
@@ -252,6 +270,19 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
       binding.updatedAt = now();
     }
     await persist();
+
+    if (binding.authorizedInputId === payload.inputId) {
+      if (binding.conversationId && Number.isInteger(binding.tabId)) {
+        void sendToContent(binding.tabId, {
+          type: 'pdf-ai:resume',
+          sessionId: binding.sessionId,
+          documentId: binding.documentId,
+          inputId: binding.pendingInputId,
+          conversationId: binding.conversationId
+        }, 5_000).catch(() => undefined);
+      }
+      return { status: 'ok', error: 'send_already_authorized' };
+    }
 
     try {
       const tab = await ensureTab(binding);
@@ -350,6 +381,35 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
       }
       return bridgeClient.getDocumentChunk(message.documentId, message.offset, message.limit);
     }
+    if (message.type === 'pdf-ai:authorize-send') {
+      if (message.inputId !== binding.pendingInputId || message.documentId !== binding.documentId ||
+          message.sessionId !== binding.sessionId) {
+        return { ok: false, error: 'send_authorization_ownership_mismatch' };
+      }
+      const routeConversation = conversationFromUrl(typeof sender.url === 'string' ? sender.url : sender.tab.url);
+      const requestedConversation = message.conversationId ?? null;
+      if (requestedConversation !== routeConversation) return { ok: false, error: 'send_authorization_route_mismatch' };
+      if (binding.conversationId && requestedConversation && binding.conversationId !== requestedConversation) {
+        return { ok: false, error: 'send_authorization_conversation_mismatch' };
+      }
+      if (binding.authorizedInputId && binding.authorizedInputId !== message.inputId) {
+        return { ok: false, error: 'another_input_already_authorized' };
+      }
+      binding.authorizedInputId = message.inputId;
+      binding.updatedAt = now();
+      await queueEvents([{
+        eventId: crypto.randomUUID(),
+        kind: 'send_authorized',
+        sessionId: binding.sessionId,
+        documentId: binding.documentId,
+        inputId: binding.pendingInputId,
+        conversationId: requestedConversation,
+        time: now()
+      }]);
+      await persist();
+      void drainEvents();
+      return { ok: true };
+    }
     if (message.type === 'pdf-ai:observation') {
       const event = message.event;
       if (!event || event.sessionId !== binding.sessionId || event.documentId !== binding.documentId ||
@@ -386,6 +446,36 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
     void drainEvents();
   }
 
+  async function cancelCommand(command) {
+    await load();
+    const payload = command?.payload;
+    if (!payload || typeof payload.sessionId !== 'string' || typeof payload.documentId !== 'string' ||
+        typeof payload.inputId !== 'string') return { status: 'failed', error: 'invalid_chat_cancel_command' };
+    const binding = owned[payload.sessionId];
+    if (!binding || binding.documentId !== payload.documentId || binding.pendingInputId !== payload.inputId) {
+      return { status: 'failed', error: 'cancel_ownership_mismatch' };
+    }
+    if (binding.authorizedInputId === payload.inputId) {
+      return { status: 'failed', error: 'send_already_authorized' };
+    }
+    const cancelled = {
+      eventId: crypto.randomUUID(),
+      kind: 'input_cancelled',
+      sessionId: binding.sessionId,
+      documentId: binding.documentId,
+      inputId: binding.pendingInputId,
+      conversationId: binding.conversationId ?? null,
+      time: now()
+    };
+    binding.pendingInputId = null;
+    binding.commandId = null;
+    binding.updatedAt = now();
+    await queueEvents([cancelled]);
+    await persist();
+    void drainEvents();
+    return { status: 'ok' };
+  }
+
   async function status() {
     await load();
     const bindings = Object.values(owned);
@@ -397,6 +487,7 @@ export function createChatAutomation({ chromeApi, bridgeClient, localStorage, no
   }
 
   return {
+    cancelCommand,
     drainEvents,
     handleRuntimeMessage,
     processCommand,

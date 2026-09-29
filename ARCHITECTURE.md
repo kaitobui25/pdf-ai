@@ -49,3 +49,11 @@ The content script refuses a non-empty user draft, a generating composer, ambigu
 PDF bytes remain main-process-owned. The extension can request bounded chunks only for a `documentId` already registered in `PdfDocumentEngine`; the engine rechecks the file identity before and after each read and never returns a native path. Content-to-background requests are fenced by the owned tab plus Chrome `sender.documentId` and a per-document token, so a retired document after reload cannot continue using a newer tab lifetime.
 
 Browser observations enter a bounded durable extension outbox before transport, then a protected `/events` bridge route. Electron stores the PDF-AI session/input/conversation/message correlation in `pdf-ai.chat-state.json`; replayed event IDs are idempotent and a conflicting document/input/conversation identity is rejected rather than guessed.
+
+## Durable chat correlation
+
+Phase 6 treats correlation as first-proof-wins durable state rather than timestamp or active-tab inference. One document owns one PDF-AI session; one bound ChatGPT conversation cannot be adopted by another session. Each input has an immutable input ID, optional native user-message/turn/request evidence, one canonical assistant message identity, and an irreversible send-authorization boundary. Canonical messages carry local `originSeq` and `revisionSeq` counters so revisions never depend on wall-clock ordering.
+
+Immediately before the one native Send click, the content document requests authorization through its exact owned sender identity. The extension persists that authorization before replying. After authorization, a missing browser receipt is represented as `uncertain`; command replay/restart may resume observation but may not issue another Send. A recovered ownership marker republishes the exact native user-message receipt before assistant observation continues. Cancellation is accepted only before authorization.
+
+Assistant finality is monotonic. A stale streaming revision cannot overwrite a final answer, a completed input cannot acquire a second assistant message identity, and conflicting conversation/turn/request evidence is rejected. Event IDs provide bounded transport replay suppression, while these semantic identities remain the long-term idempotency boundary after the event-ID window rolls over.

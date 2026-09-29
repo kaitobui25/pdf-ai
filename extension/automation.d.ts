@@ -6,6 +6,7 @@ export const PDF_AI_EVENT_OUTBOX_KEY: 'pdfAiEventOutbox';
 export function conversationFromUrl(url: string): string | null;
 
 export interface ChatAutomation {
+  cancelCommand(command: unknown): Promise<{ status: 'ok' | 'failed'; error?: string }>;
   drainEvents(): Promise<unknown>;
   handleRuntimeMessage(message: unknown, sender: unknown): Promise<unknown>;
   processCommand(command: unknown): Promise<{ status: 'ok' | 'failed'; error?: string }>;

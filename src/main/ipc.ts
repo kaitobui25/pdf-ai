@@ -85,4 +85,6 @@ export function registerIpc(
     chatManager.getSession(documentIdSchema.parse(documentId)));
   ipcMain.handle('chat:send', (_event, input: unknown): Promise<ChatSessionSnapshot> =>
     chatManager.send(chatSendSchema.parse(input) as ChatSendInput));
+  ipcMain.handle('chat:cancel', (_event, documentId: unknown): Promise<ChatSessionSnapshot> =>
+    chatManager.cancel(documentIdSchema.parse(documentId)));
 }
