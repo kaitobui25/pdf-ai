@@ -91,6 +91,49 @@ Validation:
 - npm run build: pass.
 - npm run dev: Electron main/preload/renderer start successfully and remain running until stopped.
 
+## Phase 3 — Local MCP server
+
+Inspected/reused the Phase-3 CoS patterns from:
+
+- src/main/mcp/server.ts
+- src/main/mcp/tools.ts
+- src/main/mcp/tool-declarations.ts
+- src/main/mcp/kernel.ts
+- src/main/mcp/inbound.ts
+
+Patterns reused or simplified:
+
+- Keep MCP on its own loopback listener, separate from the browser bridge.
+- Generate an unguessable per-process endpoint path instead of publishing a bare local route.
+- Apply loopback Host/Origin validation and bound request bodies before MCP dispatch.
+- Register only the tools the connector actually advertises; unknown names stay unknown at the protocol layer.
+- Use Zod as runtime validation authority and keep tool-specific page/text/image bounds in the owning subsystem.
+
+PDF-AI-specific MCP work:
+
+- Added exactly seven tools: pdf_list_documents, pdf_get_current_page, pdf_get_selection, pdf_search, pdf_read_pages, pdf_render_page and pdf_render_region.
+- Tool schemas accept only document IDs, pages, search text, render scale and normalized regions. No arbitrary filesystem path is exposed.
+- Engine errors are returned as explicit tool-level errors with stable error codes.
+- Render tools return document/page/reference metadata plus a PNG MCP image content block.
+- The Electron main process starts the MCP endpoint with the shared PdfDocumentEngine and logs the local endpoint for tunnel setup.
+
+Intentionally omitted in this phase:
+
+- Browser extension transport, Chrome pairing, command delivery, ChatGPT automation, public tunnel provisioning and conversation/session ownership.
+
+Isolation:
+
+- MCP uses its own listener and secret path; it does not reuse browser bridge ports 8875–8879 and does not touch CoS ports/state.
+
+Validation:
+
+- npm run typecheck: pass.
+- npm test: pass, 6 files / 33 tests.
+- MCP client SDK successfully connects over real loopback HTTP, discovers exactly seven tools and calls list/current/selection/search/read/render page/render region.
+- Tests cover invalid document IDs/pages, schema/query/page-range bounds, concurrent calls and multiple PDFs.
+- npm run build: pass.
+- npm run dev: Electron starts and prints a loopback PDF AI MCP endpoint, then remains running until stopped.
+
 ## Phase 2 — Page-aware document engine
 
 Inspected/reused the Phase-2 CoS patterns from:

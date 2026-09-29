@@ -18,3 +18,9 @@ PDF-AI never reads or writes another application's runtime state. Its app/user-d
 The main process owns native file selection and reads one bounded file snapshot from an open file handle. It verifies the file is regular, unchanged during the read, contains a PDF header, and is at most 128 MB. The renderer receives the PDF bytes plus metadata and a stable content-derived document ID; it never receives the native file path.
 
 The renderer uses PDF.js for continuous reading. Page canvases and text layers are rendered lazily around the viewport, in-flight renders are invalidated by generation on zoom/resize/navigation changes, and offscreen backing canvases/text DOM are released. Thumbnail canvases are also viewport-scoped. Current-page tracking only scans pages in the observer's near-viewport set rather than every page on every scroll frame. Search extracts text page-by-page with a bounded cache, and outline/thumbnails are loaded independently. The Phase-1 reader explicitly admits at most 5,000 pages and enforces CSS/raster/thumbnail dimensions before allocating canvases.
+
+## MCP boundary
+
+The PDF AI MCP server is a separate loopback-only HTTP listener on an OS-assigned local port. Each app start generates a fresh unguessable MCP path. The server publishes exactly seven PDF tools and every tool addresses content through documentId; no tool accepts an arbitrary filesystem path.
+
+MCP handlers call the same authoritative PdfDocumentEngine used by the reader state. Tool schemas are strict Zod objects, request bodies are bounded, page/text/image outputs are bounded, and rendered image tools return page metadata plus a PNG content block.

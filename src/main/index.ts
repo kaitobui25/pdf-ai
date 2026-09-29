@@ -3,12 +3,14 @@ import { app, BrowserWindow } from 'electron';
 import { APP_NAME, USER_DATA_FOLDER } from '../shared/constants.js';
 import { registerIpc } from './ipc.js';
 import { PdfDocumentEngine } from './pdf-document-engine.js';
+import { startPdfMcpServer, type PdfMcpEndpoint } from './mcp.js';
 
 app.setName(APP_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
 
 let mainWindow: BrowserWindow | null = null;
 const documentEngine = new PdfDocumentEngine();
+let mcpEndpoint: PdfMcpEndpoint | null = null;
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -56,9 +58,14 @@ if (!hasSingleInstanceLock) {
     mainWindow?.focus();
   });
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     registerIpc(documentEngine);
+    mcpEndpoint = await startPdfMcpServer(documentEngine);
+    console.info('PDF AI MCP:', mcpEndpoint.url);
     createWindow();
+  }).catch(error => {
+    console.error('PDF-AI startup failed:', error);
+    app.quit();
   });
 
   app.on('activate', () => {
@@ -70,6 +77,9 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on('will-quit', () => {
-    void documentEngine.destroy();
+    void Promise.all([
+      mcpEndpoint?.stop() ?? Promise.resolve(),
+      documentEngine.destroy()
+    ]);
   });
 }

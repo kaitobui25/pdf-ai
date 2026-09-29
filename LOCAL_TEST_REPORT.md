@@ -39,3 +39,16 @@ Visual interaction with the native Open dialog was not automated because the con
   - Replaced content invalidates stale reads and reopens under a new stable document ID PASS.
 - npm run build — PASS for main, preload, renderer and PDF.js worker.
 - npm run dev — PASS: Electron reached "starting electron app" and remained running until stopped.
+
+## Phase 3
+
+- npm run typecheck — PASS.
+- npm test — PASS, 6 test files / 33 tests.
+  - Real MCP client connects over the local HTTP endpoint and tools/list returns exactly seven PDF tools PASS.
+  - Tool schemas expose no path/filePath input PASS.
+  - list/current/selection/search/read/render-page/render-region calls PASS.
+  - Invalid document IDs and out-of-range pages return tool errors PASS.
+  - Query length and 50-page read bounds are enforced PASS.
+  - Concurrent calls across two PDFs remain isolated PASS.
+- npm run build — PASS.
+- npm run dev — PASS: Electron started and logged a secret loopback PDF AI MCP URL.
