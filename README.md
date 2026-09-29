@@ -13,3 +13,5 @@ Phase 4.1 adds a user-facing OpenAI Secure MCP Tunnel connection card. The norma
 The dedicated OpenAI tunnel and ChatGPT MCP app must be named exactly `PDF AI` and expose the seven PDF tools. Browser bridge traffic always remains local on ports 8875–8879 and never travels through the MCP tunnel.
 
 The local AI Chat pane now shows one durable timeline per open PDF. Use **Ask selection**, **Ask page**, **Ask document**, or type a custom prompt; optionally attach the current registered PDF. Assistant `pdf://<documentId>/page/<n>` references are projected as local page buttons only when they match the exact PDF snapshot currently open.
+
+Local hardening keeps chat state and diagnostics bounded under PDF-AI's own user-data directory. If the chat-state primary is damaged, PDF-AI attempts one durable backup and shows a recovery notice; operational JSONL logs contain redacted metadata rather than prompt/PDF content or credentials.

@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { PdfAiApi, RuntimeInfo } from '../shared/api.js';
 import type { PdfOpenResult, PdfSelectionUpdate } from '../shared/pdf.js';
 import type { TunnelConnectInput, TunnelConnectionStatus } from '../shared/tunnel.js';
-import type { ChatSendInput, ChatSessionSnapshot } from '../shared/chat.js';
+import type { ChatSendInput, ChatSessionSnapshot, ChatSystemStatus } from '../shared/chat.js';
 
 const api: PdfAiApi = {
   runtimeInfo: () => ipcRenderer.invoke('runtime:info') as Promise<RuntimeInfo>,
@@ -30,7 +30,8 @@ const api: PdfAiApi = {
   chatSend: (input: ChatSendInput) =>
     ipcRenderer.invoke('chat:send', input) as Promise<ChatSessionSnapshot>,
   chatCancel: (documentId: string) =>
-    ipcRenderer.invoke('chat:cancel', documentId) as Promise<ChatSessionSnapshot>
+    ipcRenderer.invoke('chat:cancel', documentId) as Promise<ChatSessionSnapshot>,
+  chatSystemStatus: () => ipcRenderer.invoke('chat:system-status') as Promise<ChatSystemStatus>
 };
 
 contextBridge.exposeInMainWorld('pdfAi', api);

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -8,7 +8,8 @@ import {
   parsePdfPageReferences,
   type ChatPageReference,
   type ChatSendInput,
-  type ChatSessionSnapshot
+  type ChatSessionSnapshot,
+  type ChatSystemStatus
 } from '../shared/chat.js';
 import type { BrowserBridge, BridgeCommand } from './bridge.js';
 import { PdfDocumentEngine } from './pdf-document-engine.js';
@@ -75,15 +76,15 @@ interface ChatDurableState {
 }
 
 export interface ChatStateStore {
-  load(): Promise<ChatDurableState | null>;
+  load(): Promise<{ state: ChatDurableState | null; recoveryNotice: string | null }>;
   save(state: ChatDurableState): Promise<void>;
 }
 
 export class MemoryChatStateStore implements ChatStateStore {
   private state: ChatDurableState | null = null;
 
-  async load(): Promise<ChatDurableState | null> {
-    return this.state ? structuredClone(this.state) : null;
+  async load(): Promise<{ state: ChatDurableState | null; recoveryNotice: string | null }> {
+    return { state: this.state ? structuredClone(this.state) : null, recoveryNotice: null };
   }
 
   async save(state: ChatDurableState): Promise<void> {
@@ -94,23 +95,91 @@ export class MemoryChatStateStore implements ChatStateStore {
 export class JsonChatStateStore implements ChatStateStore {
   constructor(private readonly filePath: string) {}
 
-  async load(): Promise<ChatDurableState | null> {
-    try {
-      const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as ChatDurableState;
-      if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.sessions) || !Array.isArray(parsed.seenEvents)) {
-        return null;
-      }
-      return parsed;
-    } catch {
-      return null;
+  async load(): Promise<{ state: ChatDurableState | null; recoveryNotice: string | null }> {
+    const primary = await this.readState(this.filePath);
+    if (primary.status === 'valid') return { state: primary.state, recoveryNotice: null };
+    const backupPath = this.filePath + '.bak';
+    const backup = await this.readState(backupPath);
+    if (primary.status === 'missing' && backup.status === 'missing') {
+      return { state: null, recoveryNotice: null };
     }
+    if (primary.status !== 'missing') await this.quarantine(this.filePath);
+    if (backup.status === 'valid') {
+      return {
+        state: backup.state,
+        recoveryNotice: 'Local chat state was damaged or incomplete. PDF-AI recovered the previous durable backup.'
+      };
+    }
+    return {
+      state: null,
+      recoveryNotice: 'Local chat state was damaged and could not be recovered. The damaged file was preserved when possible; new chat starts empty.'
+    };
+  }
+
+  private async readState(filePath: string): Promise<
+    | { status: 'valid'; state: ChatDurableState }
+    | { status: 'missing' | 'invalid' }
+  > {
+    try {
+      const parsed = JSON.parse(await readFile(filePath, 'utf8')) as ChatDurableState;
+      if (!this.validStateShape(parsed)) return { status: 'invalid' };
+      return { status: 'valid', state: parsed };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
+      return { status: 'invalid' };
+    }
+  }
+
+  private validStateShape(value: unknown): value is ChatDurableState {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const state = value as Partial<ChatDurableState>;
+    if (state.version !== 1 || !Array.isArray(state.sessions) || !Array.isArray(state.seenEvents)) return false;
+    if (state.sessions.length > MAX_SESSIONS * 4 || state.seenEvents.length > MAX_SEEN_EVENTS * 4) return false;
+    return state.sessions.every(session => {
+      if (!session || typeof session !== 'object' || Array.isArray(session)
+          || typeof session.sessionId !== 'string'
+          || typeof session.documentId !== 'string'
+          || !Array.isArray(session.messages)
+          || !Array.isArray(session.inputs)) return false;
+      if (session.messages.length > MAX_MESSAGES_PER_SESSION * 4 || session.inputs.length > MAX_INPUTS_PER_SESSION * 4) {
+        return false;
+      }
+      const validMessages = session.messages.every(message => message && typeof message === 'object'
+        && !Array.isArray(message)
+        && typeof message.id === 'string'
+        && (message.role === 'user' || message.role === 'assistant')
+        && typeof message.text === 'string'
+        && typeof message.inputId === 'string'
+        && Array.isArray(message.pageReferences));
+      const validInputs = session.inputs.every(input => input && typeof input === 'object'
+        && !Array.isArray(input)
+        && typeof input.id === 'string'
+        && typeof input.displayText === 'string'
+        && typeof input.framedPrompt === 'string'
+        && ['queued', 'authorized', 'sent', 'complete', 'uncertain', 'failed', 'cancelled'].includes(input.state));
+      return validMessages && validInputs;
+    });
+  }
+
+  private async quarantine(filePath: string): Promise<void> {
+    const suffix = new Date().toISOString().replace(/[:.]/g, '-');
+    await rename(filePath, `${filePath}.corrupt-${suffix}`).catch(() => undefined);
   }
 
   async save(state: ChatDurableState): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const temporary = this.filePath + '.tmp-' + randomBytes(6).toString('hex');
     try {
-      await writeFile(temporary, JSON.stringify(state), { encoding: 'utf8', mode: 0o600 });
+      const handle = await open(temporary, 'w', 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(state), 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await copyFile(this.filePath, this.filePath + '.bak').catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
       await rename(temporary, this.filePath);
     } finally {
       await unlink(temporary).catch(() => undefined);
@@ -183,6 +252,7 @@ function messageId(prefix: string, inputId: string): string {
 export class ChatSessionManager {
   private state: ChatDurableState = emptyState();
   private initialized = false;
+  private recoveryNotice: string | null = null;
   private mutation = Promise.resolve();
   private bridge: Pick<BrowserBridge, 'enqueueCommand'> | null = null;
 
@@ -201,7 +271,8 @@ export class ChatSessionManager {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     const loaded = await this.store.load();
-    this.state = loaded ?? emptyState();
+    this.state = loaded.state ?? emptyState();
+    this.recoveryNotice = loaded.recoveryNotice;
     this.state.sessions = this.state.sessions.slice(-MAX_SESSIONS);
     for (const session of this.state.sessions) this.normalizeSessionSequences(session);
     this.state.seenEvents = this.state.seenEvents.slice(-MAX_SEEN_EVENTS);
@@ -213,6 +284,11 @@ export class ChatSessionManager {
     await this.initialize();
     const session = this.state.sessions.find(candidate => candidate.documentId === documentId);
     return session ? cloneSnapshot(session) : null;
+  }
+
+  async getSystemStatus(): Promise<ChatSystemStatus> {
+    await this.initialize();
+    return { recoveryNotice: this.recoveryNotice };
   }
 
   async send(input: ChatSendInput): Promise<ChatSessionSnapshot> {

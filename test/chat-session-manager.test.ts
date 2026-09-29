@@ -1,10 +1,11 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ChatSessionManager,
+  JsonChatStateStore,
   MemoryChatStateStore
 } from '../src/main/chat-session-manager.js';
 import { PdfDocumentEngine } from '../src/main/pdf-document-engine.js';
@@ -323,5 +324,58 @@ describe('PDF-AI chat session manager', () => {
       eventId: 'bind-owner-b', kind: 'chat_owned', sessionId: b.sessionId, documentId: second.documentId,
       inputId: b.pendingInputId, conversationId, time: Date.now()
     }]))[0]).toMatchObject({ status: 'failed', error: 'conversation_already_owned' });
+  });
+
+  it('recovers a valid durable backup instead of silently treating a corrupt primary as empty', async () => {
+    const directory = await tempDir();
+    const pdfPath = path.join(directory, 'recovery.pdf');
+    const statePath = path.join(directory, 'pdf-ai.chat-state.json');
+    await writeFile(pdfPath, await samplePdf('Recovery state'));
+    const documents = engine();
+    const opened = await documents.openFile(pdfPath);
+    const commands: BridgeCommand[] = [];
+    const manager = new ChatSessionManager(documents, new JsonChatStateStore(statePath), fakeBridge(commands));
+    const started = await manager.send({ documentId: opened.documentId, text: 'Persist me', scope: 'document' });
+
+    await writeFile(statePath, '{broken-json', 'utf8');
+    const recovered = new ChatSessionManager(documents, new JsonChatStateStore(statePath), fakeBridge(commands));
+    await recovered.initialize();
+    expect((await recovered.getSystemStatus()).recoveryNotice).toMatch(/recovered the previous durable backup/i);
+    expect(await recovered.getSession(opened.documentId)).toMatchObject({
+      sessionId: started.sessionId,
+      pendingInputId: started.pendingInputId
+    });
+    expect((await readdir(directory)).some(name => name.startsWith('pdf-ai.chat-state.json.corrupt-'))).toBe(true);
+  });
+
+  it('surfaces an explicit recovery notice when both primary and backup chat state are unusable', async () => {
+    const directory = await tempDir();
+    const statePath = path.join(directory, 'pdf-ai.chat-state.json');
+    await writeFile(statePath, '{broken-primary', 'utf8');
+    await writeFile(statePath + '.bak', '{broken-backup', 'utf8');
+    const documents = engine();
+    const recovered = new ChatSessionManager(documents, new JsonChatStateStore(statePath), fakeBridge([]));
+    await recovered.initialize();
+    expect((await recovered.getSystemStatus()).recoveryNotice).toMatch(/could not be recovered/i);
+  });
+
+  it('quarantines syntactically valid but structurally corrupt durable state', async () => {
+    const directory = await tempDir();
+    const statePath = path.join(directory, 'pdf-ai.chat-state.json');
+    await writeFile(statePath, JSON.stringify({
+      version: 1,
+      seenEvents: [],
+      sessions: [{
+        sessionId: 'not-a-valid-session-shape',
+        documentId: 'pdf-bad-shape',
+        messages: ['not-a-message'],
+        inputs: []
+      }]
+    }), 'utf8');
+    const documents = engine();
+    const recovered = new ChatSessionManager(documents, new JsonChatStateStore(statePath), fakeBridge([]));
+    await recovered.initialize();
+    expect((await recovered.getSystemStatus()).recoveryNotice).toMatch(/could not be recovered/i);
+    expect((await readdir(directory)).some(name => name.startsWith('pdf-ai.chat-state.json.corrupt-'))).toBe(true);
   });
 });

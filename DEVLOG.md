@@ -379,3 +379,39 @@ Validation:
 - `npm run build`: pass.
 - `git diff --check`: pass.
 - `npm run dev`: pass. Electron opened the `PDF-AI` window, MCP logged only loopback port `57586`, and bridge `/hello` identified `pdf-ai` protocol 1 on port 8875. This session has no desktop-input connector, so native visual clicking was not claimed as automated coverage.
+
+## Phase 8 — Local hardening and recovery
+
+Inspected the CoS hardening/correlation/UI recovery paths before implementing this phase: `src/main/session/correlation.ts`, `src/main/session/recorder.ts`, `src/main/session/store.ts`, `src/shared/session.ts`, `src/shared/chronology.ts`, `src/renderer/chat.ts`, `src/renderer/timeline-scroll.ts`, `src/renderer/recovery.ts`, and `src/renderer/file-pdf-viewer.ts`, plus the corresponding correlation, response-identity, completion-order, recorder-final, kernel-recovery, renderer-timeline, timeline-scroll, renderer-recovery, renderer-html and session tests.
+
+Patterns reused/simplified:
+
+- Kept CoS's fail-closed recovery principle: corrupted durable state is never silently treated as authoritative. PDF-AI writes chat state through fsynced temp-file replacement, retains one prior durable backup, quarantines a damaged primary, and surfaces a local recovery notice when backup recovery or reset was required.
+- Kept bounded local retention for sessions, messages, inputs, event identities and structured logs. PDF-AI does not add CoS's larger compaction/history subsystems.
+- Added a small JSONL local logger with one rotated backup. Content-bearing/secret-shaped fields are always redacted, local paths and the private MCP URL are scrubbed, and log records contain only bounded operational metadata.
+- Kept Phase-6 correlation invariants unchanged: final assistant content is monotonic, ownership never rebinds on contradiction, and an authorized browser send is never automatically resent after restart or uncertainty.
+- Added direct graceful behavior coverage for image-only/scanned-style PDFs: text extraction may be empty while rendering and the rest of the reader remain functional.
+- Added production-source isolation scanning for forbidden CoS bridge ports/runtime names and for the independent PDF-AI extension storage namespaces.
+
+Intentionally omitted:
+
+- No installer, updater, signing, NSIS, packaging, release artifacts or CI release work.
+- No CoS Goal/Loop/workers/plugins/recovery orchestration. PDF-AI recovery is limited to its own PDF sessions, bridge/extension ownership, MCP tunnel and local UI state.
+- No automatic resend after an ambiguous authorized browser send; the durable `uncertain` state remains the safe recovery UX.
+
+Isolation:
+
+- All new files remain under PDF-AI userData (`pdf-ai.chat-state.json`, its backup/quarantine files, and `pdf-ai.log.jsonl`).
+- The production-source scan rejects CoS ports 8765–8769, `Chat On Steroids` runtime names and CoS state paths from `src` and `extension`.
+- Final smoke ran while the existing Chat On Steroids tunnel-client was active; after stopping only the PDF-AI process tree, the CoS tunnel-client remained running.
+
+Validation:
+
+- `npm run typecheck`: pass.
+- `npm test`: pass, 18 files / 82 tests.
+- Phase-8 additions cover redacted/bounded logs, valid-backup recovery, unrecoverable/corrupt-shape recovery notice + quarantine, scanned/image-only PDF behavior and production isolation scanning.
+- All earlier reader/MCP/tunnel/bridge/automation/correlation/UI tests remain green, including port collision, network/reconnect state, duplicate/delayed events, extension/service-worker restart and no-resend-after-authorization cases.
+- `npm run build`: pass.
+- Extension `node --check` and manifest parse: pass.
+- `git diff --check`: pass (Git only reports existing LF→CRLF working-tree notices).
+- `npm run dev`: pass. Electron opened PDF-AI, MCP logged only loopback port `59073`, bridge `/hello` returned `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1 on port 8875, and the actual structured local log contained only `app_ready` with MCP/bridge port metadata. The already-running Chat On Steroids tunnel-client PID 31592 remained alive after the PDF-AI process tree was stopped.

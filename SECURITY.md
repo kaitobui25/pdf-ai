@@ -19,3 +19,7 @@ The Phase-4.1 tunnel API key is write-only from the renderer. On Windows it is e
 PDF-AI downloads only its pinned OpenAI tunnel-client release, verifies the archive SHA-256 before extraction, rechecks its cached archive and executable hash before reuse, and does not silently choose a PATH copy. The tunnel health URL is accepted only when it is an HTTP 127.0.0.1 address. An invalid explicit runtime override fails closed.
 
 Secrets belong in PDF-AI's private user-data storage and must never be committed to the repository. The application does not read or write runtime state, credentials, extension storage, sessions, tunnels, or user-data owned by other applications.
+
+Phase 8 operational logs are intentionally content-poor. Fields whose names suggest API keys, credentials, secrets, tokens, prompt/text content, base64/bytes, file paths, authorization or private MCP URLs are replaced with redaction markers before serialization; secret-shaped `sk-...` substrings, private MCP URLs and Windows local paths are scrubbed even when they appear inside another diagnostic string. Logs are bounded to one current file plus one rotated backup and are not part of recovery authority.
+
+Durable chat-state recovery also fails closed. A malformed or structurally invalid primary state file is quarantined; PDF-AI uses only a structurally valid prior backup, otherwise starts empty with a visible recovery notice. A corrupt file is never accepted merely because its JSON parses.

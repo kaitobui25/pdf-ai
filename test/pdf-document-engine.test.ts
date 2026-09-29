@@ -225,6 +225,24 @@ describe('PdfDocumentEngine', () => {
     expect(regionCenter[2]).toBeLessThan(50);
   });
 
+  it('handles an image-only/scanned-style PDF with empty text without failing', async () => {
+    const directory = await tempDir();
+    const filePath = path.join(directory, 'scanned.pdf');
+    await writeFile(filePath, await colorPdf());
+    const store = engine();
+    const opened = await store.openFile(filePath);
+
+    const read = await store.readPages(opened.documentId, 1);
+    expect(read.pages).toHaveLength(1);
+    expect(read.pages[0]).toMatchObject({
+      documentId: opened.documentId,
+      page: 1,
+      text: ''
+    });
+    const rendered = await store.renderPage(opened.documentId, 1, 0.5);
+    expect(rendered.bytes.byteLength).toBeGreaterThan(0);
+  });
+
   it('deduplicates identical content while keeping the latest source identity explicit', async () => {
     const directory = await tempDir();
     const bytes = await textPdf(['Same content']);

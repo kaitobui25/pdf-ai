@@ -142,3 +142,23 @@ Visual interaction with the native Open dialog was not automated because the con
 - npm run build — PASS.
 - git diff --check — PASS.
 - npm run dev — PASS: Electron opened the `PDF-AI` window; startup logged MCP loopback port `57586` plus bridge `8875`; `/hello` returned the expected PDF-AI identity/protocol. Automated native clicking was unavailable in this tool session and is not claimed.
+
+## Phase 8
+
+- `npm run typecheck` — PASS.
+- `npm test` — PASS, 18 test files / 82 tests.
+  - Structured JSONL logger redacts secret/content/path/MCP-private-route values and keeps current + one rotated log bounded PASS.
+  - Corrupt primary chat state recovers the previous durable backup and quarantines the damaged file PASS.
+  - Corrupt primary + backup, and syntactically valid but structurally corrupt state, surface explicit recovery/reset UX instead of crashing or silently trusting bad data PASS.
+  - Image-only/scanned-style PDF returns empty page text without failure and remains renderable PASS.
+  - Production `src` + `extension` scan contains no CoS bridge ports 8765–8769, `Chat On Steroids` runtime names or CoS state paths PASS.
+  - Existing tests continue to cover two PDFs/two sessions, conversation ownership conflicts, duplicate/delayed assistant events, monotonic final responses, restart after send authorization with no second Send, extension service-worker ACK recovery, stale Chrome document rejection, bridge port collision, changed PDFs, oversized PDFs, tunnel network/offline/reconnect handling and typed page-reference navigation PASS.
+- `npm run build` — PASS for main, preload and renderer.
+- `node --check extension/bridge-client.js`, `automation.js`, `background.js`, `content.js` — PASS.
+- `extension/manifest.json` parse / MV3 identity — PASS.
+- `git diff --check` — PASS; only LF→CRLF working-tree notices were printed.
+- `npm run dev` — PASS: Electron opened PDF-AI; startup output was `PDF AI MCP: listening on 127.0.0.1:59073` and `PDF-AI browser bridge: http://127.0.0.1:8875`; `GET /hello` returned `appId=pdf-ai`, `bridgeId=pdf-ai`, protocol 1.
+- Coexistence smoke — PASS: the pre-existing Chat On Steroids `tunnel-client.exe` (PID 31592 during the run) remained alive and untouched after the PDF-AI process tree was stopped; PDF-AI bridge 8875 then became unreachable as expected.
+- Actual local structured log smoke — PASS: `%APPDATA%\\PDF-AI\\pdf-ai.log.jsonl` was created with a bounded `app_ready` metadata record and contained no MCP secret path or `sk-...` credential-shaped value.
+
+Manual boundary still applies: this tool session cannot click the native Open dialog or a real ChatGPT web page, so the automated suite proves the local reader/MCP/bridge/extension contracts and recovery logic; a human browser interaction remains the final physical UI check for a live ChatGPT account/connector.

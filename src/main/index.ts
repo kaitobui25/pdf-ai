@@ -5,6 +5,7 @@ import {
   BRIDGE_STATE_FILE,
   CHAT_STATE_FILE,
   CONFIG_FILE,
+  LOCAL_LOG_FILE,
   SECRETS_FILE,
   TUNNEL_RUNTIME_FOLDER,
   USER_DATA_FOLDER
@@ -22,6 +23,7 @@ import { ElectronTunnelCredentialStore } from './tunnel-credential.js';
 import { TunnelManager } from './tunnel-manager.js';
 import { TunnelRuntimeProvider } from './tunnel-runtime.js';
 import { ChatSessionManager, JsonChatStateStore } from './chat-session-manager.js';
+import { LocalJsonLogger } from './local-log.js';
 
 app.setName(APP_NAME);
 app.setPath('userData', path.join(app.getPath('appData'), USER_DATA_FOLDER));
@@ -32,6 +34,7 @@ let mcpEndpoint: PdfMcpEndpoint | null = null;
 let browserBridge: BrowserBridge | null = null;
 let tunnelManager: TunnelManager | null = null;
 let chatManager: ChatSessionManager | null = null;
+let localLogger: LocalJsonLogger | null = null;
 let shutdownStarted = false;
 let shutdownComplete = false;
 
@@ -84,6 +87,7 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(async () => {
     mcpEndpoint = await startPdfMcpServer(documentEngine);
     const userData = app.getPath('userData');
+    localLogger = new LocalJsonLogger(path.join(userData, LOCAL_LOG_FILE));
     tunnelManager = new TunnelManager(
       mcpEndpoint.url,
       new JsonTunnelConfigStore(path.join(userData, CONFIG_FILE)),
@@ -96,6 +100,8 @@ if (!hasSingleInstanceLock) {
       new JsonChatStateStore(path.join(userData, CHAT_STATE_FILE))
     );
     await chatManager.initialize();
+    const chatSystemStatus = await chatManager.getSystemStatus();
+    if (chatSystemStatus.recoveryNotice) localLogger.warn('chat_state_recovery', { recovered: true });
     registerIpc(documentEngine, tunnelManager, chatManager);
     browserBridge = await startBrowserBridge(
       new JsonBridgeStateStore(path.join(userData, BRIDGE_STATE_FILE)),
@@ -108,6 +114,7 @@ if (!hasSingleInstanceLock) {
     chatManager.setBridge(browserBridge);
     console.info('PDF AI MCP: listening on 127.0.0.1:' + mcpEndpoint.port);
     console.info('PDF-AI browser bridge:', browserBridge.url);
+    localLogger.info('app_ready', { mcpPort: mcpEndpoint.port, bridgePort: browserBridge.port });
     createWindow();
   }).catch(error => {
     console.error('PDF-AI startup failed:', error);
@@ -127,11 +134,13 @@ if (!hasSingleInstanceLock) {
     event.preventDefault();
     if (shutdownStarted) return;
     shutdownStarted = true;
+    localLogger?.info('app_shutdown', { clean: true });
     void Promise.all([
       tunnelManager?.stop() ?? Promise.resolve(),
       browserBridge?.stop() ?? Promise.resolve(),
       mcpEndpoint?.stop() ?? Promise.resolve(),
-      documentEngine.destroy()
+      documentEngine.destroy(),
+      localLogger?.flush() ?? Promise.resolve()
     ]).finally(() => {
       shutdownComplete = true;
       app.quit();

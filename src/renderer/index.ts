@@ -145,6 +145,7 @@ let chatPollRequest = 0;
 let chatActionBusy = false;
 let currentChatSession: ChatSessionSnapshot | null = null;
 let renderedChatKey = '';
+let chatRecoveryNotice: string | null = null;
 
 const reader = new PdfReader(
   { viewport, pages, outline, thumbnails },
@@ -319,8 +320,9 @@ const renderChatSession = (session: ChatSessionSnapshot | null): void => {
   chatProgress.textContent = session?.state === 'uncertain'
     ? 'Delivery is uncertain. PDF-AI will not resend automatically.'
     : view.busy ? view.label + '…' : 'Ready';
-  chatError.hidden = !session?.error;
-  chatError.textContent = session?.error ?? '';
+  const visibleError = session?.error ?? chatRecoveryNotice;
+  chatError.hidden = !visibleError;
+  chatError.textContent = visibleError ?? '';
 
   const hasDocument = chatDocumentId !== null;
   const sendBlocked = !hasDocument || view.busy || chatActionBusy;
@@ -564,6 +566,11 @@ void window.pdfAi.runtimeInfo().then(info => {
   const runtime = required<HTMLElement>('#runtime-status');
   runtime.textContent = info.bridgeId + ' · MCP ' + info.mcpConnectorName;
 });
+
+void window.pdfAi.chatSystemStatus().then(next => {
+  chatRecoveryNotice = next.recoveryNotice;
+  renderChatSession(currentChatSession);
+}).catch(() => undefined);
 
 void refreshTunnelStatus();
 const tunnelPollTimer = window.setInterval(() => void refreshTunnelStatus(), 1_000);

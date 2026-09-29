@@ -63,3 +63,11 @@ Assistant finality is monotonic. A stale streaming revision cannot overwrite a f
 Phase 7 renders only the durable main-process chat snapshot. The renderer never chooses ChatGPT tabs or conversations. Its actions are limited to the current `documentId`, prompt text, an explicit scope (`selection`, `page`, `document`, or `custom`), and an optional attach-current-PDF flag. Session/conversation/input ownership remains outside the renderer.
 
 Chat polling is document-generation fenced, so a delayed A response cannot apply after A→B→A navigation. Timeline rows use the durable `originSeq` ordering and preserve a user who has scrolled away from the bottom. Assistant page references are typed data from main-process parsing; the renderer activates navigation only when the referenced `documentId` equals the exact current PDF and the page is within the current page count. Raw `pdf://` text is never navigated as an external URL.
+
+## Local hardening and recovery boundary
+
+Phase 8 keeps recovery local and bounded. `pdf-ai.chat-state.json` is written through a synced temporary file and atomic replacement; before replacement, the previous primary is copied to one `.bak` recovery snapshot. On startup, an invalid primary is quarantined and a structurally valid backup is preferred. If neither copy is usable, PDF-AI starts a new empty chat state and exposes an explicit recovery notice instead of silently presenting corrupt state as valid.
+
+Operational logging is separate from chat/session content. `pdf-ai.log.jsonl` stores only small structured metadata, rotates to one bounded backup, redacts fields named like credentials/tokens/prompts/text/bytes/paths/private MCP URLs, scrubs secret-shaped strings and local Windows paths, and is never used as an authoritative state store.
+
+All retention boundaries are explicit: at most 64 durable chat sessions, 240 visible messages and 120 input records per session, 2,000 transport event identities/journal metadata rows, and the bounded current/rotated operational log. These limits are independent of the PDF text/cache/raster bounds described above.

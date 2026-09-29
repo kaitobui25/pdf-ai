@@ -46,6 +46,10 @@ export interface ChatSendInput {
   attachDocument?: boolean;
 }
 
+export interface ChatSystemStatus {
+  recoveryNotice: string | null;
+}
+
 export interface PdfDocumentChunk {
   documentId: string;
   name: string;
